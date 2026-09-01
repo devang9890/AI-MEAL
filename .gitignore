@@ -16,5 +16,4 @@ frontend/dist/
 frontend/.vite/
 
 # Environment files & Logs
-*.env
 *.log
