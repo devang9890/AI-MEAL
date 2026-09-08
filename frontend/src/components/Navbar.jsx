@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
+import { SignedIn, SignedOut, UserButton } from '@clerk/clerk-react'
 
 function Navbar() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
@@ -32,7 +33,7 @@ function Navbar() {
           <span className="text-lg font-bold tracking-tight text-text-primary">AI Meal Planner</span>
         </Link>
 
-        {/* Desktop */}
+        {/* Desktop nav */}
         <div className="hidden items-center gap-1 md:flex">
           <button
             onClick={() => scrollToSection('how-it-works')}
@@ -47,12 +48,34 @@ function Navbar() {
             Features
           </button>
           <div className="mx-3 h-5 w-px bg-border-light" />
-          <Link
-            to="/login"
-            className="rounded-xl bg-primary-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm shadow-primary-600/20 transition-all hover:bg-primary-700 hover:shadow-md hover:shadow-primary-600/25 active:scale-[0.98]"
-          >
-            Login
-          </Link>
+
+          {/* Signed-out state: show Login / Sign up links */}
+          <SignedOut>
+            <Link
+              to="/login"
+              className="rounded-lg px-4 py-2 text-sm font-medium text-text-secondary transition-colors hover:bg-cream hover:text-text-primary"
+            >
+              Login
+            </Link>
+            <Link
+              to="/register"
+              className="ml-1 rounded-xl bg-primary-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm shadow-primary-600/20 transition-all hover:bg-primary-700 hover:shadow-md hover:shadow-primary-600/25 active:scale-[0.98]"
+            >
+              Sign Up
+            </Link>
+          </SignedOut>
+
+          {/* Signed-in state: Clerk UserButton (avatar + profile menu) */}
+          <SignedIn>
+            <UserButton
+              afterSignOutUrl="/"
+              appearance={{
+                elements: {
+                  avatarBox: 'h-9 w-9',
+                },
+              }}
+            />
+          </SignedIn>
         </div>
 
         {/* Mobile toggle */}
@@ -76,7 +99,16 @@ function Navbar() {
             <button onClick={() => scrollToSection('how-it-works')} className="rounded-lg px-3 py-2.5 text-left text-sm font-medium text-text-secondary transition-colors hover:bg-cream hover:text-text-primary">How It Works</button>
             <button onClick={() => scrollToSection('features')} className="rounded-lg px-3 py-2.5 text-left text-sm font-medium text-text-secondary transition-colors hover:bg-cream hover:text-text-primary">Features</button>
             <div className="my-2 h-px bg-border-light" />
-            <Link to="/login" onClick={() => setMobileMenuOpen(false)} className="rounded-xl bg-primary-600 px-3 py-2.5 text-center text-sm font-semibold text-white transition-colors hover:bg-primary-700">Login</Link>
+            <SignedOut>
+              <Link to="/login" onClick={() => setMobileMenuOpen(false)} className="rounded-lg px-3 py-2.5 text-center text-sm font-medium text-text-secondary transition-colors hover:bg-cream hover:text-text-primary">Login</Link>
+              <Link to="/register" onClick={() => setMobileMenuOpen(false)} className="rounded-xl bg-primary-600 px-3 py-2.5 text-center text-sm font-semibold text-white transition-colors hover:bg-primary-700">Sign Up</Link>
+            </SignedOut>
+            <SignedIn>
+              <div className="flex items-center gap-3 px-3 py-2.5">
+                <UserButton afterSignOutUrl="/" />
+                <span className="text-sm font-medium text-text-secondary">My Account</span>
+              </div>
+            </SignedIn>
           </div>
         </div>
       )}
