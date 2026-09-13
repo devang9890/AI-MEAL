@@ -4,6 +4,8 @@ import { useAuth, useUser } from '@clerk/clerk-react'
 import Landing from './pages/Landing'
 import Login from './pages/Login'
 import Register from './pages/Register'
+import Recipes from './pages/Recipes'
+import Ingredients from './pages/Ingredients'
 
 function App() {
   const { isSignedIn, getToken } = useAuth()
@@ -38,6 +40,8 @@ function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<Landing />} />
+        <Route path="/recipes" element={<Recipes />} />
+        <Route path="/ingredients" element={<Ingredients />} />
         {/* Redirect already-signed-in users away from auth pages */}
         <Route
           path="/login"

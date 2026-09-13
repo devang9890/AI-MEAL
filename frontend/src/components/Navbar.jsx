@@ -35,15 +35,35 @@ function Navbar() {
 
         {/* Desktop nav */}
         <div className="hidden items-center gap-1 md:flex">
+          <Link
+            to="/recipes"
+            className={`rounded-lg px-3.5 py-2 text-sm font-medium transition-colors ${
+              location.pathname === '/recipes'
+                ? 'bg-primary-50 font-bold text-primary-700'
+                : 'text-text-secondary hover:bg-cream hover:text-text-primary'
+            }`}
+          >
+            Recipes
+          </Link>
+          <Link
+            to="/ingredients"
+            className={`rounded-lg px-3.5 py-2 text-sm font-medium transition-colors ${
+              location.pathname === '/ingredients'
+                ? 'bg-primary-50 font-bold text-primary-700'
+                : 'text-text-secondary hover:bg-cream hover:text-text-primary'
+            }`}
+          >
+            Ingredients
+          </Link>
           <button
             onClick={() => scrollToSection('how-it-works')}
-            className="rounded-lg px-4 py-2 text-sm font-medium text-text-secondary transition-colors hover:bg-cream hover:text-text-primary"
+            className="rounded-lg px-3.5 py-2 text-sm font-medium text-text-secondary transition-colors hover:bg-cream hover:text-text-primary"
           >
             How It Works
           </button>
           <button
             onClick={() => scrollToSection('features')}
-            className="rounded-lg px-4 py-2 text-sm font-medium text-text-secondary transition-colors hover:bg-cream hover:text-text-primary"
+            className="rounded-lg px-3.5 py-2 text-sm font-medium text-text-secondary transition-colors hover:bg-cream hover:text-text-primary"
           >
             Features
           </button>
@@ -96,6 +116,20 @@ function Navbar() {
       {mobileMenuOpen && (
         <div className="border-t border-border-light bg-white px-6 py-5 md:hidden">
           <div className="flex flex-col gap-1">
+            <Link
+              to="/recipes"
+              onClick={() => setMobileMenuOpen(false)}
+              className="rounded-lg px-3 py-2.5 text-left text-sm font-medium text-text-secondary transition-colors hover:bg-cream hover:text-text-primary"
+            >
+              Recipes
+            </Link>
+            <Link
+              to="/ingredients"
+              onClick={() => setMobileMenuOpen(false)}
+              className="rounded-lg px-3 py-2.5 text-left text-sm font-medium text-text-secondary transition-colors hover:bg-cream hover:text-text-primary"
+            >
+              Ingredients
+            </Link>
             <button onClick={() => scrollToSection('how-it-works')} className="rounded-lg px-3 py-2.5 text-left text-sm font-medium text-text-secondary transition-colors hover:bg-cream hover:text-text-primary">How It Works</button>
             <button onClick={() => scrollToSection('features')} className="rounded-lg px-3 py-2.5 text-left text-sm font-medium text-text-secondary transition-colors hover:bg-cream hover:text-text-primary">Features</button>
             <div className="my-2 h-px bg-border-light" />
@@ -112,6 +146,7 @@ function Navbar() {
           </div>
         </div>
       )}
+
     </nav>
   )
 }

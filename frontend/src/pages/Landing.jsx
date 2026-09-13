@@ -65,9 +65,16 @@ function Landing() {
                   Know Your Budget Meal
                   <ArrowRight />
                 </Link>
+                <Link
+                  to="/recipes"
+                  className="inline-flex items-center justify-center gap-2.5 rounded-xl border border-primary-300 bg-primary-50/60 px-7 py-3.5 text-sm font-semibold text-primary-700 transition-all hover:bg-primary-100/70 active:scale-[0.98]"
+                >
+                  Browse 125+ Recipes
+                  <ArrowRight />
+                </Link>
                 <a
                   href="#how-it-works"
-                  className="inline-flex items-center justify-center gap-2.5 rounded-xl border border-border-light bg-white px-7 py-3.5 text-sm font-semibold text-text-primary transition-all hover:border-primary-200 hover:bg-primary-50 active:scale-[0.98]"
+                  className="inline-flex items-center justify-center gap-2.5 rounded-xl border border-border-light bg-white px-5 py-3.5 text-sm font-semibold text-text-primary transition-all hover:border-primary-200 hover:bg-primary-50 active:scale-[0.98]"
                 >
                   How It Works
                   <ArrowDown />
@@ -225,7 +232,17 @@ function Landing() {
             <MealCard type="Dinner" name="Paneer Roti Bowl" price="&#8377;85" protein="28g" calories="550 cal" color="orange" />
             <MealCard type="Snack" name="Sprouts Chaat" price="&#8377;30" protein="10g" calories="180 cal" color="lime" />
           </div>
-          <p className="mt-8 text-center text-xs text-text-muted">
+          <div className="mt-10 flex justify-center">
+            <Link
+              to="/recipes"
+              className="inline-flex items-center gap-2 rounded-xl bg-primary-600 px-7 py-3.5 text-sm font-semibold text-white shadow-md shadow-primary-600/20 transition-all hover:bg-primary-700 hover:shadow-lg active:scale-[0.98]"
+            >
+              Browse All 125+ Recipes &amp; Nutrition Breakdown
+              <ArrowRight />
+            </Link>
+          </div>
+
+          <p className="mt-6 text-center text-xs text-text-muted">
             Sample meals shown for illustration. Actual plans are generated based on your household profile.
           </p>
         </div>
