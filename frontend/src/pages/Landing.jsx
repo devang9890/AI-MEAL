@@ -176,6 +176,16 @@ function Landing() {
                   </div>
                 ))}
               </div>
+
+              <div className="mt-8">
+                <Link
+                  to="/household"
+                  className="inline-flex items-center gap-2 rounded-xl bg-primary-600 px-6 py-3 text-sm font-semibold text-white shadow-md shadow-primary-600/20 hover:bg-primary-700 transition-all hover:scale-[1.02]"
+                >
+                  <span>Set Up Your Family Household</span>
+                  <ArrowRight />
+                </Link>
+              </div>
             </div>
 
             {/* Right — household nutrition card */}

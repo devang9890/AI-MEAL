@@ -6,6 +6,7 @@ import Login from './pages/Login'
 import Register from './pages/Register'
 import Recipes from './pages/Recipes'
 import Ingredients from './pages/Ingredients'
+import Household from './pages/Household'
 
 function App() {
   const { isSignedIn, getToken } = useAuth()
@@ -42,6 +43,7 @@ function App() {
         <Route path="/" element={<Landing />} />
         <Route path="/recipes" element={<Recipes />} />
         <Route path="/ingredients" element={<Ingredients />} />
+        <Route path="/household" element={<Household />} />
         {/* Redirect already-signed-in users away from auth pages */}
         <Route
           path="/login"

@@ -12,6 +12,7 @@ class Household(Base):
     weekly_budget = Column(Numeric(10, 2), nullable=True)
     owner_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     # Relationships
     owner = relationship("User", back_populates="households")
