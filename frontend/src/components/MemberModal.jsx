@@ -1,19 +1,18 @@
 import { useState, useEffect } from 'react'
 
 const ACTIVITY_OPTIONS = [
-  { value: 'sedentary', label: 'Sedentary (1.2×)', desc: 'Desk job, little to no weekly exercise' },
-  { value: 'light', label: 'Light Active (1.375×)', desc: 'Light exercise / walks 1–3 days/week' },
-  { value: 'moderate', label: 'Moderately Active (1.55×)', desc: 'Moderate workouts / sports 3–5 days/week' },
-  { value: 'active', label: 'Very Active (1.725×)', desc: 'Vigorous training 6–7 days/week' },
-  { value: 'very_active', label: 'Extremely Active (1.9×)', desc: 'Athletic competition or physical labor' },
+  { value: 'sedentary', label: 'Sedentary (1.2x)', desc: 'Desk job, little to no weekly exercise' },
+  { value: 'light', label: 'Light Active (1.375x)', desc: 'Light exercise / walks 1–3 days/week' },
+  { value: 'moderate', label: 'Moderately Active (1.55x)', desc: 'Moderate workouts / sports 3–5 days/week' },
+  { value: 'active', label: 'Very Active (1.725x)', desc: 'Vigorous training 6–7 days/week' },
+  { value: 'very_active', label: 'Extremely Active (1.9x)', desc: 'Athletic competition or physical labor' },
 ]
 
 const DIETARY_OPTIONS = [
   { value: 'vegetarian', label: 'Vegetarian' },
   { value: 'vegan', label: 'Vegan' },
-  { value: 'eggetarian', label: 'Eggetarian' },
+  { value: 'eggitarian', label: 'Eggitarian' },
   { value: 'non_vegetarian', label: 'Non-Vegetarian' },
-  { value: 'pescatarian', label: 'Pescatarian' },
 ]
 
 function MemberModal({ isOpen, onClose, onSave, initialData = null, isSaving = false }) {
@@ -37,8 +36,8 @@ function MemberModal({ isOpen, onClose, onSave, initialData = null, isSaving = f
       setWeightKg(initialData.weight_kg ? String(initialData.weight_kg) : '')
       setActivityLevel(initialData.activity_level || 'moderate')
       setDietaryPreference(initialData.dietary_preference || 'vegetarian')
-      setAllergiesText(Array.isArray(initialData.allergies) ? initialData.allergies.join(', ') : '')
-      setRestrictionsText(Array.isArray(initialData.dietary_restrictions) ? initialData.dietary_restrictions.join(', ') : '')
+      setAllergiesText(initialData.allergies || '')
+      setRestrictionsText(initialData.dietary_restrictions || '')
     } else {
       setName('')
       setAge('')
@@ -77,13 +76,9 @@ function MemberModal({ isOpen, onClose, onSave, initialData = null, isSaving = f
       return
     }
 
-    const allergies = allergiesText
-      ? allergiesText.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)
-      : []
+    const allergies = allergiesText.trim() ? allergiesText.trim() : null
 
-    const restrictions = restrictionsText
-      ? restrictionsText.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)
-      : []
+    const restrictions = restrictionsText.trim() ? restrictionsText.trim() : null
 
     onSave({
       name: name.trim(),

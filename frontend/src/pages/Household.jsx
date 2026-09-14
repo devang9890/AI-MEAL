@@ -580,14 +580,14 @@ export default function Household() {
                                 <span className="inline-flex items-center rounded-lg bg-primary-50 px-2 py-0.5 text-[11px] font-bold text-primary-700 capitalize">
                                   🥗 {member.dietary_preference.replace('_', ' ')}
                                 </span>
-                                {member.allergies && member.allergies.map((allergy, idx) => (
+                                {member.allergies && typeof member.allergies === 'string' && member.allergies.split(',').map((allergy, idx) => (
                                   <span key={idx} className="inline-flex items-center rounded-lg bg-rose-50 px-2 py-0.5 text-[11px] font-medium text-rose-700">
-                                    🚫 {allergy}
+                                    🚫 {allergy.trim()}
                                   </span>
                                 ))}
-                                {member.dietary_restrictions && member.dietary_restrictions.map((res, idx) => (
+                                {member.dietary_restrictions && typeof member.dietary_restrictions === 'string' && member.dietary_restrictions.split(',').map((res, idx) => (
                                   <span key={idx} className="inline-flex items-center rounded-lg bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">
-                                    ⚠️ {res}
+                                    ⚠️ {res.trim()}
                                   </span>
                                 ))}
                               </div>

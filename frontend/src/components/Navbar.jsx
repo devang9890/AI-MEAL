@@ -65,6 +65,16 @@ function Navbar() {
           >
             Household & Nutrition
           </Link>
+          <Link
+            to="/meal-plan"
+            className={`rounded-lg px-3.5 py-2 text-sm font-medium transition-colors ${
+              location.pathname === '/meal-plan'
+                ? 'bg-primary-50 font-bold text-primary-700'
+                : 'text-text-secondary hover:bg-cream hover:text-text-primary'
+            }`}
+          >
+            Meal Plan
+          </Link>
           <button
             onClick={() => scrollToSection('how-it-works')}
             className="rounded-lg px-3.5 py-2 text-sm font-medium text-text-secondary transition-colors hover:bg-cream hover:text-text-primary"
@@ -146,6 +156,13 @@ function Navbar() {
               className="rounded-lg px-3 py-2.5 text-left text-sm font-medium text-text-secondary transition-colors hover:bg-cream hover:text-text-primary"
             >
               Household & Nutrition
+            </Link>
+            <Link
+              to="/meal-plan"
+              onClick={() => setMobileMenuOpen(false)}
+              className="rounded-lg px-3 py-2.5 text-left text-sm font-medium text-text-secondary transition-colors hover:bg-cream hover:text-text-primary"
+            >
+              Meal Plan
             </Link>
             <button onClick={() => scrollToSection('how-it-works')} className="rounded-lg px-3 py-2.5 text-left text-sm font-medium text-text-secondary transition-colors hover:bg-cream hover:text-text-primary">How It Works</button>
             <button onClick={() => scrollToSection('features')} className="rounded-lg px-3 py-2.5 text-left text-sm font-medium text-text-secondary transition-colors hover:bg-cream hover:text-text-primary">Features</button>

@@ -62,11 +62,14 @@ def seed_recipes(db: Session, ingredient_map: dict[str, Ingredient]) -> None:
     updated_recipes = 0
     total_associations = 0
 
-    for r_data in RECIPES_DATA:
+    print("Fetching existing recipes...", flush=True)
+    existing_map = {r.name: r for r in db.query(Recipe).all()}
+    print(f"Found {len(existing_map)} existing recipes in DB.", flush=True)
+
+    for idx, r_data in enumerate(RECIPES_DATA):
         name = r_data["name"].strip()
 
         # Compute accurate estimated cost based on ingredient prices
-        # formula: sum( (quantity / 100.0) * ingredient.price_per_unit )
         computed_cost = Decimal("0.00")
         for ing_entry in r_data["ingredients"]:
             ing_obj = ingredient_map.get(ing_entry["name"])
@@ -76,7 +79,7 @@ def seed_recipes(db: Session, ingredient_map: dict[str, Ingredient]) -> None:
 
         computed_cost = round(computed_cost, 2)
 
-        existing_recipe = db.query(Recipe).filter(Recipe.name == name).first()
+        existing_recipe = existing_map.get(name)
         if existing_recipe:
             existing_recipe.description = r_data.get("description")
             existing_recipe.meal_type = r_data.get("meal_type")
@@ -90,7 +93,6 @@ def seed_recipes(db: Session, ingredient_map: dict[str, Ingredient]) -> None:
             recipe = existing_recipe
             updated_recipes += 1
 
-            # Clear existing recipe_ingredients to ensure a fresh, clean association set
             db.query(RecipeIngredient).filter(RecipeIngredient.recipe_id == recipe.id).delete()
             db.flush()
         else:
@@ -114,7 +116,6 @@ def seed_recipes(db: Session, ingredient_map: dict[str, Ingredient]) -> None:
         for ing_entry in r_data["ingredients"]:
             ing_obj = ingredient_map.get(ing_entry["name"])
             if not ing_obj:
-                print(f"Warning: Ingredient '{ing_entry['name']}' not found in database for recipe '{name}'!")
                 continue
 
             ri = RecipeIngredient(
@@ -126,9 +127,13 @@ def seed_recipes(db: Session, ingredient_map: dict[str, Ingredient]) -> None:
             db.add(ri)
             total_associations += 1
 
+        if (idx + 1) % 25 == 0 or (idx + 1) == len(RECIPES_DATA):
+            db.commit()
+            print(f"  Processed {idx + 1}/{len(RECIPES_DATA)} recipes...", flush=True)
+
     db.commit()
-    print(f"Recipes: {created_recipes} inserted, {updated_recipes} updated (Total: {created_recipes + updated_recipes})")
-    print(f"Recipe-Ingredient associations created: {total_associations}")
+    print(f"Recipes: {created_recipes} inserted, {updated_recipes} updated (Total: {created_recipes + updated_recipes})", flush=True)
+    print(f"Recipe-Ingredient associations created: {total_associations}", flush=True)
 
 
 def main():
