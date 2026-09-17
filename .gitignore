@@ -17,3 +17,11 @@ frontend/.vite/
 
 # Environment files & Logs
 *.log
+.env
+.env.*
+*.env
+!.env.example
+backend/.env
+backend/.env.*
+frontend/.env
+frontend/.env.*

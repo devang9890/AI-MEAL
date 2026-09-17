@@ -6,6 +6,7 @@ import Footer from '../components/Footer'
 import HouseholdModal from '../components/HouseholdModal'
 import MemberModal from '../components/MemberModal'
 import MetabolicModal from '../components/MetabolicModal'
+import ChatWidget from '../components/chat/ChatWidget'
 
 const API_BASE = 'http://localhost:8000/api'
 
@@ -710,6 +711,9 @@ export default function Household() {
         member={metabolicModalData.member}
         target={metabolicModalData.target}
       />
+
+      {/* Floating AI Nutrition Assistant Widget */}
+      <ChatWidget getToken={getToken} householdId={activeHousehold?.id} />
     </div>
   )
 }

@@ -10,6 +10,7 @@ from app.models.user import User
 from app.routers.food import router as food_router
 from app.routers.household import router as household_router
 from app.routers.meal_plan import router as meal_plan_router
+from app.routers.chat import router as chat_router
 
 app = FastAPI(
     title="AI Meal Planner API",
@@ -33,6 +34,7 @@ app.add_middleware(
 app.include_router(food_router)
 app.include_router(household_router)
 app.include_router(meal_plan_router)
+app.include_router(chat_router)
 
 
 
