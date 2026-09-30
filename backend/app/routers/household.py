@@ -156,6 +156,53 @@ def get_household(
     )
 
 
+@router.put("/households/{household_id}", response_model=HouseholdOut)
+@router.patch("/households/{household_id}", response_model=HouseholdOut)
+def update_household(
+    household_id: int,
+    payload: HouseholdUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Update household name or weekly budget (must be owned by authenticated user)."""
+    household = _get_user_household_or_404(household_id, current_user, db)
+
+    update_data = payload.model_dump(exclude_unset=True)
+    if "name" in update_data and update_data["name"] is not None:
+        household.name = update_data["name"].strip()
+    if "weekly_budget" in update_data:
+        household.weekly_budget = update_data["weekly_budget"]
+
+    db.commit()
+    db.refresh(household)
+
+    return HouseholdOut(
+        id=household.id,
+        name=household.name,
+        weekly_budget=float(household.weekly_budget) if household.weekly_budget is not None else None,
+        owner_id=household.owner_id,
+        created_at=household.created_at,
+        updated_at=household.updated_at,
+        member_count=len(household.members),
+    )
+
+
+@router.delete(
+    "/households/{household_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_household(
+    household_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Delete a household owned by authenticated user."""
+    household = _get_user_household_or_404(household_id, current_user, db)
+    db.delete(household)
+    db.commit()
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Member Endpoints
 # ---------------------------------------------------------------------------
