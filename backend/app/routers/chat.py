@@ -67,5 +67,6 @@ def chat_endpoint(
     return ChatResponse(
         reply=result["reply"],
         success=result["success"],
+        sources=result.get("sources"),
         error=result.get("error")
     )

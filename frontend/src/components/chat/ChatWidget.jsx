@@ -86,6 +86,7 @@ export default function ChatWidget({ getToken, householdId }) {
           {
             role: 'assistant',
             content: data.reply,
+            sources: data.sources || [],
             timestamp: aiReplyTime
           }
         ])

@@ -29,6 +29,7 @@ htmlcov/
 
 # Logs
 *.log
+.rag_manifest.json
 
 # Operating System and IDE files
 .DS_Store

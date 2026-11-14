@@ -38,4 +38,5 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     reply: str
     success: bool = True
+    sources: Optional[List[str]] = None
     error: Optional[str] = None

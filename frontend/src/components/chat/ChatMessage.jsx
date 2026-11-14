@@ -101,6 +101,14 @@ export default function ChatMessage({ message }) {
             </div>
           )}
 
+          {/* Safe source indicator if present */}
+          {!isUser && message.sources && message.sources.length > 0 && (
+            <div className="mt-2.5 pt-2 border-t border-border-light/70 flex items-center gap-1.5 text-[11px] text-primary-700 font-medium select-none">
+              <span className="opacity-75">📚 Based on:</span>
+              <span className="text-text-secondary truncate">{message.sources.slice(0, 3).join(' • ')}</span>
+            </div>
+          )}
+
           {/* Time display if available */}
           {message.timestamp && (
             <span
