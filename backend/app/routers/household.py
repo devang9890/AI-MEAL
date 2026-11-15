@@ -9,6 +9,7 @@ from app.models.user import User
 from app.models.household import Household
 from app.models.member import Member
 from app.models.nutrition import NutritionTarget
+from app.models.meal_plan import MealPlan
 from app.schemas.household import (
     HouseholdCreate,
     HouseholdUpdate,
@@ -24,6 +25,14 @@ from app.services.nutrition_service import (
 )
 
 router = APIRouter(prefix="/api", tags=["Households & Members"])
+
+
+def _mark_plans_stale(household_id: int, db: Session) -> None:
+    """Keep historical plans, but prevent an old health profile appearing current."""
+    db.query(MealPlan).filter(
+        MealPlan.household_id == household_id,
+        MealPlan.status == "active",
+    ).update({MealPlan.status: "needs_regeneration"}, synchronize_session=False)
 
 
 # ---------------------------------------------------------------------------
@@ -170,8 +179,11 @@ def update_household(
     update_data = payload.model_dump(exclude_unset=True)
     if "name" in update_data and update_data["name"] is not None:
         household.name = update_data["name"].strip()
+    budget_changed = "weekly_budget" in update_data and update_data["weekly_budget"] != household.weekly_budget
     if "weekly_budget" in update_data:
         household.weekly_budget = update_data["weekly_budget"]
+    if budget_changed:
+        _mark_plans_stale(household.id, db)
 
     db.commit()
     db.refresh(household)
@@ -231,11 +243,16 @@ def create_member(
         activity_level=payload.activity_level,
         dietary_preference=payload.dietary_preference,
         allergies=payload.allergies,
+        diseases=payload.diseases,
         dietary_restrictions=payload.dietary_restrictions,
     )
     db.add(member)
     db.commit()
     db.refresh(member)
+
+    # A new person changes serving sizes, safety constraints, and targets.
+    _mark_plans_stale(household.id, db)
+    db.commit()
 
     # Automatically calculate initial baseline nutrition target
     try:
@@ -256,6 +273,7 @@ def create_member(
         activity_level=member.activity_level,
         dietary_preference=member.dietary_preference,
         allergies=member.allergies,
+        diseases=member.diseases,
         dietary_restrictions=member.dietary_restrictions,
         created_at=member.created_at,
         updated_at=member.updated_at,
@@ -290,6 +308,7 @@ def list_household_members(
             activity_level=m.activity_level,
             dietary_preference=m.dietary_preference,
             allergies=m.allergies,
+            diseases=m.diseases,
             dietary_restrictions=m.dietary_restrictions,
             created_at=m.created_at,
             updated_at=m.updated_at,
@@ -321,6 +340,7 @@ def get_member(
         activity_level=m.activity_level,
         dietary_preference=m.dietary_preference,
         allergies=m.allergies,
+        diseases=m.diseases,
         dietary_restrictions=m.dietary_restrictions,
         created_at=m.created_at,
         updated_at=m.updated_at,
@@ -345,33 +365,48 @@ def update_member(
     member = _get_user_member_or_404(household_id, member_id, current_user, db)
 
     biometrics_changed = False
+    plan_relevant_change = False
 
     if payload.name is not None:
         member.name = payload.name.strip()
     if payload.age is not None and payload.age != member.age:
         member.age = payload.age
         biometrics_changed = True
+        plan_relevant_change = True
     if payload.gender is not None and payload.gender != member.gender:
         member.gender = payload.gender
         biometrics_changed = True
+        plan_relevant_change = True
     if payload.height_cm is not None and payload.height_cm != member.height_cm:
         member.height_cm = payload.height_cm
         biometrics_changed = True
+        plan_relevant_change = True
     if payload.weight_kg is not None and payload.weight_kg != member.weight_kg:
         member.weight_kg = payload.weight_kg
         biometrics_changed = True
+        plan_relevant_change = True
     if (
         payload.activity_level is not None
         and payload.activity_level != member.activity_level
     ):
         member.activity_level = payload.activity_level
         biometrics_changed = True
+        plan_relevant_change = True
     if payload.dietary_preference is not None:
+        plan_relevant_change = plan_relevant_change or payload.dietary_preference != member.dietary_preference
         member.dietary_preference = payload.dietary_preference
-    if payload.allergies is not None:
+    if "allergies" in payload.model_fields_set:
+        plan_relevant_change = plan_relevant_change or payload.allergies != member.allergies
         member.allergies = payload.allergies
-    if payload.dietary_restrictions is not None:
+    if "diseases" in payload.model_fields_set:
+        plan_relevant_change = plan_relevant_change or payload.diseases != member.diseases
+        member.diseases = payload.diseases
+    if "dietary_restrictions" in payload.model_fields_set:
+        plan_relevant_change = plan_relevant_change or payload.dietary_restrictions != member.dietary_restrictions
         member.dietary_restrictions = payload.dietary_restrictions
+
+    if plan_relevant_change:
+        _mark_plans_stale(member.household_id, db)
 
     db.commit()
     db.refresh(member)
@@ -395,6 +430,7 @@ def update_member(
         activity_level=member.activity_level,
         dietary_preference=member.dietary_preference,
         allergies=member.allergies,
+        diseases=member.diseases,
         dietary_restrictions=member.dietary_restrictions,
         created_at=member.created_at,
         updated_at=member.updated_at,
@@ -414,6 +450,7 @@ def delete_member(
 ):
     """Delete a family member and cascade-delete associated nutrition targets."""
     member = _get_user_member_or_404(household_id, member_id, current_user, db)
+    _mark_plans_stale(member.household_id, db)
     db.delete(member)
     db.commit()
     return None
@@ -437,6 +474,8 @@ def calculate_and_save_member_nutrition(
 
     calculated = calculate_nutrition_for_member(member)
     save_or_update_nutrition_target(db, member, calculated)
+    _mark_plans_stale(member.household_id, db)
+    db.commit()
 
     return NutritionCalculationResult(
         member_id=member.id,

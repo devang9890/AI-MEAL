@@ -1,10 +1,11 @@
 import { useState } from 'react'
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-const MEAL_TYPES = ['Breakfast', 'Lunch', 'Dinner']
+const MEAL_TYPES = ['Breakfast', 'Lunch', 'Dinner', 'Snack']
 
 export default function MealPlanGrid({ meals = [], onSwapClick }) {
   const [expandedExplanationId, setExpandedExplanationId] = useState(null)
+  const [selectedOptionsMeal, setSelectedOptionsMeal] = useState(null)
 
   // Index meals by day and meal_type
   const mealMap = {}
@@ -25,12 +26,15 @@ export default function MealPlanGrid({ meals = [], onSwapClick }) {
         return 'text-emerald-700 bg-emerald-50 border-emerald-200'
       case 'dinner':
         return 'text-indigo-700 bg-indigo-50 border-indigo-200'
+      case 'snack':
+        return 'text-lime-700 bg-lime-50 border-lime-200'
       default:
         return 'text-gray-700 bg-gray-50 border-gray-200'
     }
   }
 
   return (
+    <>
     <div className="w-full overflow-x-auto pb-4">
       <div className="min-w-[1020px]">
         {/* Days Header */}
@@ -73,6 +77,7 @@ export default function MealPlanGrid({ meals = [], onSwapClick }) {
                   }
 
                   const isExpanded = expandedExplanationId === meal.id
+                  const personalizedCount = (meal.personalized_options || []).filter((option) => option.personalized).length
 
                   return (
                     <div
@@ -158,6 +163,16 @@ export default function MealPlanGrid({ meals = [], onSwapClick }) {
                           </button>
                         </div>
 
+                        {meal.personalized_options?.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setSelectedOptionsMeal(meal)}
+                            className="mt-2 inline-flex w-full items-center justify-center rounded-lg border border-indigo-100 bg-indigo-50 px-2 py-1.5 text-[11px] font-semibold text-indigo-700 hover:bg-indigo-100 transition-colors"
+                          >
+                            {personalizedCount ? `👥 View personalized options` : `👥 Shared for ${meal.personalized_options.length}`}
+                          </button>
+                        )}
+
                         {/* Expanded explanation popover */}
                         {isExpanded && meal.explanation && (
                           <div className="mt-2 text-[11px] text-text-secondary bg-primary-50/60 p-2.5 rounded-xl border border-primary-100 animate-fadeIn">
@@ -174,5 +189,26 @@ export default function MealPlanGrid({ meals = [], onSwapClick }) {
         </div>
       </div>
     </div>
+    {selectedOptionsMeal && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <button aria-label="Close personalized options" onClick={() => setSelectedOptionsMeal(null)} className="absolute inset-0 bg-slate-950/30 backdrop-blur-[1px]" />
+        <section role="dialog" aria-modal="true" className="relative w-full max-w-2xl overflow-hidden rounded-2xl border border-border-light bg-white shadow-2xl">
+          <header className="flex items-start justify-between border-b border-border-light bg-cream/50 px-5 py-4">
+            <div><p className="text-[11px] font-bold uppercase tracking-wider text-indigo-600">{selectedOptionsMeal.day} · {selectedOptionsMeal.meal_type}</p><h3 className="mt-1 text-lg font-bold text-text-primary">Personalized meal options</h3><p className="mt-1 text-xs text-text-secondary">Base meal: {selectedOptionsMeal.recipe_name}</p></div>
+            <button onClick={() => setSelectedOptionsMeal(null)} className="rounded-lg px-2 py-1 text-lg text-text-muted hover:bg-white hover:text-text-primary">×</button>
+          </header>
+          <div className="grid max-h-[65vh] gap-3 overflow-y-auto p-5 sm:grid-cols-2">
+            {selectedOptionsMeal.personalized_options.map((option) => (
+              <article key={option.member_id} className={`rounded-xl border p-4 ${option.safe ? 'border-indigo-100 bg-indigo-50/40' : 'border-rose-200 bg-rose-50'}`}>
+                <div className="flex items-center justify-between gap-2"><h4 className="font-bold text-text-primary">{option.member_name}</h4><span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${option.personalized ? 'bg-indigo-100 text-indigo-700' : 'bg-emerald-100 text-emerald-700'}`}>{option.personalized ? 'Personalized' : 'Shared meal'}</span></div>
+                <p className="mt-2 font-semibold text-sm text-text-primary">{option.recipe_name || 'No verified safe option'}</p>
+                {option.safe ? <><p className="mt-1 text-xs text-text-secondary">{Math.round(option.calories)} kcal · {option.protein}g protein · ₹{Math.round(option.cost)}</p><p className="mt-3 text-xs leading-relaxed text-text-secondary">{option.reason}</p></> : <p className="mt-2 text-xs leading-relaxed text-rose-700">{option.reason}</p>}
+              </article>
+            ))}
+          </div>
+        </section>
+      </div>
+    )}
+    </>
   )
 }

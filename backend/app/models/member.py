@@ -17,6 +17,8 @@ class Member(Base):
     activity_level = Column(String(50), nullable=False)  # 'sedentary', 'light', 'moderate', 'active', 'very_active'
     dietary_preference = Column(String(50), nullable=False, default="vegetarian")  # 'vegetarian', 'non_vegetarian', 'vegan', 'eggitarian'
     allergies = Column(Text, nullable=True)
+    # Comma-separated selected conditions from the curated health catalog.
+    diseases = Column(Text, nullable=True)
     dietary_restrictions = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)

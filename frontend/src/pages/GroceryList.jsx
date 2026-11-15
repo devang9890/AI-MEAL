@@ -172,7 +172,7 @@ export default function GroceryList() {
                     Weekly Grocery List
                   </h1>
                   <p className="text-sm text-text-secondary mt-1">
-                    Ingredients aggregated across all 21 scheduled household meals.
+                    Ingredients aggregated across all 28 scheduled household meals.
                   </p>
                 </div>
 

@@ -13,6 +13,8 @@ Health / public routes do NOT need this dependency.
 """
 
 import os
+import base64
+import logging
 from typing import Optional
 
 import httpx
@@ -24,18 +26,30 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.models.user import User
 
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 CLERK_PUBLISHABLE_KEY: str = os.getenv("VITE_CLERK_PUBLISHABLE_KEY", "")
-# Derive Frontend API from the publishable key:
-#   pk_test_dGVuZGVyLWtvaS01Njk0LmNsZXJrLmFjY291bnRzLmRldiQ
-#   → base64 decode the middle part → "tender-koi-5694.clerk.accounts.dev"
-# We just hard-code the JWKS URL via env; fall back to auto-detect.
-CLERK_JWKS_URL: str = os.getenv(
-    "CLERK_JWKS_URL",
-    "https://tender-koi-5694.clerk.accounts.dev/.well-known/jwks.json",
-)
+
+
+def _jwks_url_from_publishable_key(key: str) -> str:
+    """Derive the Clerk instance URL instead of tying the API to one project."""
+    try:
+        encoded_domain = key.split("_", 2)[-1]
+        padded = encoded_domain + "=" * (-len(encoded_domain) % 4)
+        domain = base64.urlsafe_b64decode(padded).decode("utf-8").rstrip("$")
+        if domain.endswith("clerk.accounts.dev"):
+            return f"https://{domain}/.well-known/jwks.json"
+    except (ValueError, UnicodeDecodeError):
+        pass
+    # A deployment may explicitly configure this URL when it does not expose a
+    # publishable key to the backend.
+    return ""
+
+
+CLERK_JWKS_URL: str = os.getenv("CLERK_JWKS_URL") or _jwks_url_from_publishable_key(CLERK_PUBLISHABLE_KEY)
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -43,9 +57,11 @@ _bearer = HTTPBearer(auto_error=False)
 _jwks_cache: Optional[dict] = None
 
 
-def _get_jwks() -> dict:
+def _get_jwks(force_refresh: bool = False) -> dict:
     global _jwks_cache
-    if _jwks_cache is None:
+    if not CLERK_JWKS_URL:
+        raise RuntimeError("Clerk JWKS URL is not configured")
+    if _jwks_cache is None or force_refresh:
         resp = httpx.get(CLERK_JWKS_URL, timeout=10)
         resp.raise_for_status()
         _jwks_cache = resp.json()
@@ -65,11 +81,18 @@ def _verify_clerk_token(token: str) -> dict:
         )
         return payload
     except JWTError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid or expired token: {exc}",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        # Signing keys can rotate while the server is running. Refreshing once
+        # avoids rejecting a perfectly valid Clerk session after a rotation.
+        try:
+            jwks = _get_jwks(force_refresh=True)
+            return jwt.decode(token, jwks, algorithms=["RS256"], options={"verify_aud": False})
+        except (JWTError, httpx.HTTPError, RuntimeError) as refresh_exc:
+            logger.warning("Clerk token verification failed after JWKS refresh: %s", type(refresh_exc).__name__)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication token could not be verified. Please sign in again.",
+                headers={"WWW-Authenticate": "Bearer"},
+            ) from refresh_exc
 
 
 def sync_user_data(

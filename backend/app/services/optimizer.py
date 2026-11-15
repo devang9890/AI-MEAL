@@ -23,6 +23,8 @@ from app.models.member import Member
 from app.models.nutrition import NutritionTarget
 from app.models.recipe import Recipe, RecipeIngredient
 from app.models.ingredient import Ingredient
+from app.services.health_catalog import ALLERGY_INGREDIENT_TERMS, CLINICIAN_REVIEW_CONDITIONS, CONDITION_RULES
+from app.services.compatibility_service import assess_recipe, member_reason
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +33,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 DAYS: List[str] = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-MEAL_TYPES: List[str] = ["breakfast", "lunch", "dinner"]
+MEAL_TYPES: List[str] = ["breakfast", "lunch", "dinner", "snack"]
 
 PREFERENCE_ALLOWED_TAGS: Dict[str, List[str]] = {
     "vegetarian": ["vegetarian", "vegan"],
@@ -42,7 +44,7 @@ PREFERENCE_ALLOWED_TAGS: Dict[str, List[str]] = {
 
 # Target fraction of daily nutrition provided by the 3 main dishes (breakfast, lunch, dinner)
 # Note: In Indian family diets, rotis/chapatis, rice, yogurt/curd, salads, and snacks provide the remainder.
-MAIN_MEAL_SHARE = 0.50
+MAIN_MEAL_SHARE = 0.65
 
 RELAXATION_TIERS: List[Tuple[float, float, Optional[str]]] = [
     (1.00, 1.00, None),
@@ -96,6 +98,8 @@ def _build_recipe_data(db: Session) -> Dict[int, Dict[str, Any]]:
             "fat": round(total_fat, 1),
             "fiber": round(total_fiber, 1),
             "servings": recipe.servings or 2,
+            "ingredient_names": [ri.ingredient.name.lower() for ri in recipe.recipe_ingredients],
+            "added_salt_g": sum(ri.quantity for ri in recipe.recipe_ingredients if "salt" in ri.ingredient.name.lower()),
         }
 
     return recipe_data
@@ -127,12 +131,15 @@ def _eligible_recipes(
 ) -> List[Dict[str, Any]]:
     """Filter recipes by meal_type, dietary preference, and allergens."""
     allergens: List[str] = []
+    diseases: List[str] = []
     for m in members:
         if m.allergies:
             for a in m.allergies.split(","):
                 clean = a.strip().lower()
                 if clean:
                     allergens.append(clean)
+        if m.diseases:
+            diseases.extend(d.strip() for d in m.diseases.split(",") if d.strip())
     allergens = list(set(allergens))
 
     # Most restrictive dietary preference wins
@@ -144,6 +151,22 @@ def _eligible_recipes(
             break
     allowed_tags = PREFERENCE_ALLOWED_TAGS.get(effective_pref, [])
 
+    avoid_terms: List[str] = []
+    max_salt_g: Optional[float] = None
+    for allergy in allergens:
+        known_terms = next(
+            (terms for label, terms in ALLERGY_INGREDIENT_TERMS.items() if label.lower() == allergy),
+            [allergy],
+        )
+        avoid_terms.extend(known_terms)
+    for disease in set(diseases):
+        rule = CONDITION_RULES.get(disease)
+        if not rule:
+            continue
+        avoid_terms.extend(rule.get("avoid_terms", []))
+        if rule.get("max_salt_g") is not None:
+            max_salt_g = min(max_salt_g, rule["max_salt_g"]) if max_salt_g is not None else rule["max_salt_g"]
+
     eligible = []
     for recipe in recipe_data.values():
         r_type = recipe["meal_type"]
@@ -153,13 +176,114 @@ def _eligible_recipes(
         if tags and allowed_tags:
             if not any(t in allowed_tags for t in tags):
                 continue
-        if allergens:
-            name_lower = recipe["name"].lower()
-            tag_str = " ".join(tags)
-            if any(a in name_lower or a in tag_str for a in allergens):
-                continue
+        ingredient_text = " ".join(recipe.get("ingredient_names", []))
+        if any(term.lower() in ingredient_text for term in avoid_terms if term):
+            continue
+        if max_salt_g is not None and recipe.get("added_salt_g", 0.0) > max_salt_g:
+            continue
         eligible.append(recipe)
     return eligible
+
+
+def is_recipe_eligible_for_household(recipe_id: int, household: Household, meal_type: str, db: Session) -> bool:
+    """Use the same safety and preference filter for manual swaps as planning."""
+    eligible = _eligible_recipes(_build_recipe_data(db), household.members, meal_type)
+    return any(recipe["id"] == recipe_id for recipe in eligible)
+
+
+def personalized_options_for_recipe(
+    base_recipe: Dict[str, Any], members: List[Member], recipe_data: Dict[int, Dict[str, Any]], db: Session
+) -> List[Dict[str, Any]]:
+    """Choose a safe per-member option while retaining a coordinated base meal.
+
+    Allergy/condition blockers are absolute. Nutrition is used only to rank
+    already-safe alternatives, never to override a blocker.
+    """
+    options: List[Dict[str, Any]] = []
+    for member in members:
+        base_assessment = assess_recipe(member, base_recipe)
+        chosen = base_recipe
+        assessment = base_assessment
+        if not assessment["safe"]:
+            candidates = [
+                recipe for recipe in recipe_data.values()
+                if recipe.get("meal_type") == base_recipe.get("meal_type")
+                and assess_recipe(member, recipe)["safe"]
+            ]
+            if not candidates:
+                options.append({
+                    "member_id": member.id, "member_name": member.name,
+                    "recipe_id": None, "recipe_name": None, "safe": False,
+                    "reason": "No verified safe alternative is available for this meal slot.",
+                    "blockers": assessment["blockers"], "unresolved": True,
+                })
+                continue
+            target = db.query(NutritionTarget).filter(NutritionTarget.member_id == member.id).first()
+            # Prefer protein/fibre-dense alternatives without pretending to meet a full-day target.
+            protein_goal = float(target.daily_protein_g) / 4 if target else 15.0
+            chosen = min(candidates, key=lambda r: (
+                abs(r["protein"] / max(1, r["servings"]) - protein_goal) - r["fiber"] / max(1, r["servings"]) * .15,
+                r["estimated_cost"],
+            ))
+            assessment = assess_recipe(member, chosen)
+        servings = max(1, chosen.get("servings", 1))
+        options.append({
+            "member_id": member.id, "member_name": member.name,
+            "recipe_id": chosen["id"], "recipe_name": chosen["name"], "safe": assessment["safe"],
+            "personalized": chosen["id"] != base_recipe["id"],
+            "reason": member_reason(member, base_recipe, chosen, base_assessment),
+            "blockers": base_assessment["blockers"],
+            "ingredients": chosen.get("ingredient_names", []),
+            "calories": round(chosen["calories"] / servings, 1),
+            "protein": round(chosen["protein"] / servings, 1),
+            "carbs": round(chosen["carbs"] / servings, 1),
+            "fat": round(chosen["fat"] / servings, 1),
+            "fiber": round(chosen["fiber"] / servings, 1),
+            "cost": round(chosen["estimated_cost"] / servings, 2),
+        })
+    return options
+
+
+def personalized_options_for_recipe_id(recipe_id: int, members: List[Member], db: Session) -> List[Dict[str, Any]]:
+    """Public rehydration helper for persisted plan cards."""
+    recipes = _build_recipe_data(db)
+    recipe = recipes.get(recipe_id)
+    return personalized_options_for_recipe(recipe, members, recipes, db) if recipe else []
+
+
+def nutrition_dashboard(meals: List[Dict[str, Any]], members: List[Member], db: Session) -> List[Dict[str, Any]]:
+    """Aggregate the selected individual options across one representative day."""
+    dashboard: List[Dict[str, Any]] = []
+    nutrients = ("calories", "protein", "carbs", "fat", "fiber")
+    for member in members:
+        target = db.query(NutritionTarget).filter(NutritionTarget.member_id == member.id).first()
+        planned = {key: 0.0 for key in nutrients}
+        unresolved: List[str] = []
+        # Monday is representative; every day has the same four meal categories.
+        for meal in meals:
+            if meal["day"] != DAYS[0]:
+                continue
+            option = next((o for o in meal.get("personalized_options", []) if o["member_id"] == member.id), None)
+            if not option or option.get("unresolved"):
+                unresolved.append(f"{meal['meal_type'].capitalize()}: no verified safe option")
+                continue
+            for key in nutrients:
+                planned[key] += float(option.get(key) or 0)
+        targets = {
+            "calories": float(target.daily_calories) if target else 0,
+            "protein": float(target.daily_protein_g) if target else 0,
+            "carbs": float(target.daily_carbs_g) if target else 0,
+            "fat": float(target.daily_fat_g) if target else 0,
+            "fiber": float(target.daily_fiber_g) if target else 0,
+        }
+        dashboard.append({
+            "member_id": member.id, "member_name": member.name,
+            "targets": {k: round(v, 1) for k, v in targets.items()},
+            "planned": {k: round(v, 1) for k, v in planned.items()},
+            "gaps": {k: round(max(0, targets[k] - planned[k]), 1) for k in nutrients},
+            "unresolved": unresolved,
+        })
+    return dashboard
 
 
 def _solve_ilp(
@@ -211,7 +335,7 @@ def _solve_ilp(
 
     # C2: daily nutrition floors (summed across breakfast, lunch, dinner for each day)
     for day in DAYS:
-        for nutrient in ["calories", "protein", "carbs", "fat"]:
+        for nutrient in ["calories", "protein", "carbs", "fat", "fiber"]:
             floor = daily_targets.get(nutrient, 0.0)
             if floor <= 0:
                 continue
@@ -238,7 +362,7 @@ def _solve_ilp(
     # C4: Strict Variety Constraints
     # C4.1: Maximum 1 appearance per week for Breakfast and Lunch (guaranteeing 7 unique breakfasts and 7 unique lunches); max 2 for Dinner
     for mtype in MEAL_TYPES:
-        max_limit = 1 if mtype in ["Breakfast", "Lunch"] else 2
+        max_limit = 1 if mtype in ["breakfast", "lunch"] else 2
         for r in eligible_by_slot.get(mtype, []):
             rid = r["id"]
             uses = [x[(day, mtype, rid)] for day in DAYS if (day, mtype, rid) in x]
@@ -291,11 +415,32 @@ def generate_meal_plan(household: Household, db: Session) -> Dict[str, Any]:
 
     recipe_data = _build_recipe_data(db)
     daily_targets = _household_daily_targets(members, db)
+    selected_conditions = {
+        disease.strip() for member in members if member.diseases
+        for disease in member.diseases.split(",") if disease.strip()
+    }
+    safety_notes: List[str] = []
+    for condition in sorted(selected_conditions):
+        rule = CONDITION_RULES.get(condition)
+        if rule and rule.get("carbs_factor"):
+            daily_targets["carbs"] = round(daily_targets["carbs"] * rule["carbs_factor"], 1)
+        if rule and rule.get("fat_factor"):
+            daily_targets["fat"] = round(daily_targets["fat"] * rule["fat_factor"], 1)
+        if rule and rule.get("note"):
+            safety_notes.append(f"{condition}: {rule['note']}")
+        if condition in CLINICIAN_REVIEW_CONDITIONS:
+            safety_notes.append(
+                f"{condition}: this planner is not a clinical diet; confirm targets, medicines, and portions with the treating clinician or dietitian."
+            )
     weekly_budget = float(household.weekly_budget) if household.weekly_budget else None
 
     eligible_by_slot: Dict[str, List[Dict[str, Any]]] = {}
     for mtype in MEAL_TYPES:
-        eligible_by_slot[mtype] = _eligible_recipes(recipe_data, members, mtype)
+        # Build an economical household base first. Each member is then
+        # deterministically assigned that base or a verified safe alternative.
+        # This avoids incorrectly excluding a safe shared meal for everyone
+        # because one person needs an individual substitute.
+        eligible_by_slot[mtype] = _eligible_recipes(recipe_data, [], mtype)
         logger.info(f"Eligible for {mtype}: {len(eligible_by_slot[mtype])} recipes")
 
     member_count = len(members)
@@ -347,6 +492,7 @@ def generate_meal_plan(household: Household, db: Session) -> Dict[str, Any]:
                 "fat": round(recipe["fat"] * scale, 1),
                 "fiber": round(recipe["fiber"] * scale, 1),
                 "dietary_tags": recipe["dietary_tags"],
+                "personalized_options": personalized_options_for_recipe(recipe, members, recipe_data, db),
             })
             total_cost += scaled_cost
             nutrition_sum["calories"] += recipe["calories"] * scale
@@ -366,5 +512,7 @@ def generate_meal_plan(household: Household, db: Session) -> Dict[str, Any]:
         "daily_targets": daily_targets,
         "weekly_nutrition_summary": {k: round(v, 1) for k, v in nutrition_sum.items()},
         "member_count": len(members),
+        "safety_notes": safety_notes,
+        "member_nutrition_dashboard": nutrition_dashboard(meals_out, members, db),
     }
 

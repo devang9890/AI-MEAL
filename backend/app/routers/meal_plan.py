@@ -19,7 +19,7 @@ from app.models.household import Household
 from app.models.meal_plan import MealPlan
 from app.models.meal import Meal
 from app.models.recipe import Recipe
-from app.services.optimizer import generate_meal_plan, DAYS, MEAL_TYPES
+from app.services.optimizer import generate_meal_plan, is_recipe_eligible_for_household, personalized_options_for_recipe_id, DAYS, MEAL_TYPES
 from app.services.grocery_service import build_grocery_list
 from app.services.explainability_service import explain_plan
 
@@ -47,6 +47,7 @@ class MealOut(BaseModel):
     fiber: Optional[float] = None
     dietary_tags: Optional[List[str]] = None
     explanation: Optional[str] = None
+    personalized_options: Optional[List[Dict[str, Any]]] = None
 
 
 class MealPlanOut(BaseModel):
@@ -62,6 +63,8 @@ class MealPlanOut(BaseModel):
     relaxations_applied: Optional[List[str]] = None
     weekly_nutrition_summary: Optional[Dict[str, float]] = None
     member_count: Optional[int] = None
+    safety_notes: Optional[List[str]] = None
+    member_nutrition_dashboard: Optional[List[Dict[str, Any]]] = None
     meals: List[MealOut] = []
 
 
@@ -105,9 +108,12 @@ def _get_plan(plan_id: int, household_id: int, db: Session) -> MealPlan:
     return plan
 
 
-def _meal_to_out(m: Meal, metadata: Optional[Dict] = None) -> MealOut:
+def _meal_to_out(m: Meal, metadata: Optional[Dict] = None, household: Optional[Household] = None, db: Optional[Session] = None) -> MealOut:
     """Convert a Meal ORM object to MealOut schema."""
     meta = metadata or {}
+    options = meta.get("personalized_options")
+    if options is None and household is not None and db is not None:
+        options = personalized_options_for_recipe_id(m.recipe_id, household.members, db)
     return MealOut(
         id=m.id,
         recipe_id=m.recipe_id,
@@ -123,6 +129,7 @@ def _meal_to_out(m: Meal, metadata: Optional[Dict] = None) -> MealOut:
         fiber=meta.get("fiber"),
         dietary_tags=meta.get("dietary_tags"),
         explanation=meta.get("explanation"),
+        personalized_options=options,
     )
 
 
@@ -158,6 +165,11 @@ def generate_plan(
 
     # Persist plan
     today = date.today()
+    # Preserve prior plans as history; one household has one current plan.
+    db.query(MealPlan).filter(
+        MealPlan.household_id == household.id,
+        MealPlan.status.in_(["active", "needs_regeneration"]),
+    ).update({MealPlan.status: "superseded"}, synchronize_session=False)
     meal_plan = MealPlan(
         household_id=household.id,
         week_start_date=today,
@@ -207,6 +219,8 @@ def generate_plan(
         relaxations_applied=plan_result.get("relaxations_applied", []),
         weekly_nutrition_summary=plan_result.get("weekly_nutrition_summary"),
         member_count=plan_result.get("member_count"),
+        safety_notes=plan_result.get("safety_notes", []),
+        member_nutrition_dashboard=plan_result.get("member_nutrition_dashboard", []),
         meals=meals_out,
     )
 
@@ -236,7 +250,7 @@ def list_plans(
             week_start_date=p.week_start_date,
             total_cost=float(p.total_cost) if p.total_cost else None,
             status=p.status,
-            meals=[_meal_to_out(m) for m in p.meals],
+            meals=[_meal_to_out(m, household=_get_owned_household(household_id, current_user, db), db=db) for m in p.meals],
         )
         for p in plans
     ]
@@ -262,7 +276,7 @@ def get_plan(
         week_start_date=plan.week_start_date,
         total_cost=float(plan.total_cost) if plan.total_cost else None,
         status=plan.status,
-        meals=[_meal_to_out(m) for m in plan.meals],
+        meals=[_meal_to_out(m, household=_get_owned_household(household_id, current_user, db), db=db) for m in plan.meals],
     )
 
 
@@ -340,10 +354,18 @@ def swap_meal(
 
     if meal_obj.recipe_id == payload.new_recipe_id:
         raise HTTPException(status_code=400, detail="New recipe is the same as the current one.")
+    if new_recipe.meal_type.lower() != payload.meal_type:
+        raise HTTPException(status_code=400, detail="Choose a recipe from the same meal slot.")
+    household = _get_owned_household(household_id, current_user, db)
+    if not is_recipe_eligible_for_household(new_recipe.id, household, payload.meal_type, db):
+        raise HTTPException(
+            status_code=400,
+            detail="This recipe conflicts with the household's dietary, allergy, or health-profile safeguards.",
+        )
 
     # Update
     old_cost = float(meal_obj.cost or 0.0)
-    new_cost = float(new_recipe.estimated_cost or 0.0)
+    new_cost = round(float(new_recipe.estimated_cost or 0.0) * meal_obj.servings / max(1, new_recipe.servings or 2), 2)
 
     meal_obj.recipe_id = new_recipe.id
     meal_obj.cost = new_cost

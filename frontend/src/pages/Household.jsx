@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth, useUser, SignedIn, SignedOut } from '@clerk/clerk-react'
 import Navbar from '../components/Navbar'
 import Footer from '../components/Footer'
@@ -7,12 +7,42 @@ import HouseholdModal from '../components/HouseholdModal'
 import MemberModal from '../components/MemberModal'
 import MetabolicModal from '../components/MetabolicModal'
 import ChatWidget from '../components/chat/ChatWidget'
+import { useMemberDraft } from '../context/MemberDraftContext'
 
 const API_BASE = 'http://localhost:8000/api'
+
+function HealthStatusPill({ type, items }) {
+  const isAllergy = type === 'allergy'
+  const hasItems = items.length > 0
+  const label = isAllergy
+    ? (hasItems ? `${items.length} ${items.length === 1 ? 'allergy' : 'allergies'} noted` : 'No allergies noted')
+    : (hasItems ? `${items.length} condition${items.length === 1 ? '' : 's'} noted` : 'No conditions noted')
+  const palette = isAllergy
+    ? (hasItems ? 'bg-rose-50 text-rose-700' : 'bg-slate-50 text-slate-500')
+    : (hasItems ? 'bg-violet-50 text-violet-700' : 'bg-slate-50 text-slate-500')
+
+  return (
+    <span className="group/health relative inline-flex">
+      <span tabIndex={hasItems ? 0 : undefined} className={`inline-flex cursor-default items-center rounded-lg px-2 py-0.5 text-[11px] font-medium ${palette}`}>
+        {isAllergy ? '🚫' : '🩺'} {label}
+      </span>
+      {hasItems && (
+        <span role="tooltip" className="pointer-events-none absolute left-0 top-full z-30 mt-2 w-60 rounded-xl border border-border-light bg-white p-3 text-left text-xs text-text-secondary opacity-0 shadow-lg transition-opacity group-hover/health:opacity-100 group-focus-within/health:opacity-100">
+          <span className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-text-muted">{isAllergy ? 'Recorded allergies' : 'Recorded conditions'}</span>
+          <span className="block leading-relaxed">{items.join(', ')}</span>
+        </span>
+      )}
+    </span>
+  )
+}
 
 export default function Household() {
   const { isSignedIn, getToken } = useAuth()
   const { user } = useUser()
+  const location = useLocation()
+  const navigate = useNavigate()
+  const { clearDraft, refreshFromStorage, readMemberDraft } = useMemberDraft()
+  const [memberModalKey, setMemberModalKey] = useState(0)
 
   // Data state
   const [households, setHouseholds] = useState([])
@@ -29,6 +59,9 @@ export default function Household() {
   // Modal states
   const [isHouseholdModalOpen, setIsHouseholdModalOpen] = useState(false)
   const [editingHousehold, setEditingHousehold] = useState(null)
+  const [isDeleteHouseholdOpen, setIsDeleteHouseholdOpen] = useState(false)
+  const [deleteConfirmation, setDeleteConfirmation] = useState('')
+  const [deletingHousehold, setDeletingHousehold] = useState(false)
   const [isMemberModalOpen, setIsMemberModalOpen] = useState(false)
   const [editingMember, setEditingMember] = useState(null)
   const [isMetabolicModalOpen, setIsMetabolicModalOpen] = useState(false)
@@ -114,6 +147,33 @@ export default function Household() {
     }
   }, [activeHousehold, fetchMembers])
 
+  // Re-open the Add/Edit modal whenever a client-side member draft exists.
+  // Draft survives allergy/disease route trips and remounts; cleared only on
+  // Save Member / Update Member success or Cancel.
+  useEffect(() => {
+    if (households.length === 0) return
+    const current = refreshFromStorage()
+    if (!current) return
+
+    const household =
+      households.find((item) => String(item.id) === String(current.householdId)) ||
+      households[0]
+    setActiveHousehold(household)
+    setEditingMember(
+      current.isEdit && current.memberId
+        ? { id: current.memberId, ...current }
+        : null
+    )
+    setIsMemberModalOpen(true)
+
+    if (
+      location.search.includes('resumeMemberDraft=1') ||
+      location.search.includes('flow=member-draft')
+    ) {
+      navigate('/household', { replace: true })
+    }
+  }, [location.search, households, navigate, refreshFromStorage])
+
   // Save Household (Create / Update)
   const handleSaveHousehold = async (payload) => {
     try {
@@ -143,24 +203,58 @@ export default function Household() {
         const errData = await res.json()
         throw new Error(errData.detail || 'Failed to save household')
       }
+      const savedHousehold = await res.json()
 
       setIsHouseholdModalOpen(false)
       setEditingHousehold(null)
       showToast(editingHousehold ? 'Household updated successfully!' : 'Household created successfully!')
+      if (!editingHousehold) {
+        setActiveHousehold(savedHousehold)
+        setMembers([])
+        setNutritionTargets({})
+      }
       fetchHouseholds()
     } catch (err) {
       alert(err.message)
     }
   }
 
-  // Save Member (Create / Update)
+  const handleDeleteHousehold = async () => {
+    if (!activeHousehold || deleteConfirmation.trim() !== activeHousehold.name || deletingHousehold) return
+    try {
+      setDeletingHousehold(true)
+      const token = await getToken()
+      const res = await fetch(`${API_BASE}/households/${activeHousehold.id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error('Failed to remove household')
+      setIsDeleteHouseholdOpen(false)
+      setDeleteConfirmation('')
+      setActiveHousehold(null)
+      setMembers([])
+      setNutritionTargets({})
+      showToast(`Removed ${activeHousehold.name}`)
+      fetchHouseholds()
+    } catch (err) {
+      alert(err.message)
+    } finally {
+      setDeletingHousehold(false)
+    }
+  }
+
+  // Save Member (Create / Update) — only API write for the member form.
   const handleSaveMember = async (payload) => {
     if (!activeHousehold) return
+    const currentDraft = readMemberDraft()
+    const memberId =
+      editingMember?.id ||
+      (currentDraft?.isEdit && currentDraft?.memberId ? currentDraft.memberId : null)
     try {
       const token = await getToken()
       let res
-      if (editingMember) {
-        res = await fetch(`${API_BASE}/households/${activeHousehold.id}/members/${editingMember.id}`, {
+      if (memberId) {
+        res = await fetch(`${API_BASE}/households/${activeHousehold.id}/members/${memberId}`, {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
@@ -186,11 +280,32 @@ export default function Household() {
 
       setIsMemberModalOpen(false)
       setEditingMember(null)
-      showToast(editingMember ? 'Member updated successfully!' : 'Member added to household!')
+      clearDraft()
+      showToast(memberId ? 'Member updated successfully!' : 'Member added to household!')
       fetchMembers()
     } catch (err) {
       alert(err.message)
     }
+  }
+
+  const openAddMember = () => {
+    clearDraft()
+    setEditingMember(null)
+    setMemberModalKey((key) => key + 1)
+    setIsMemberModalOpen(true)
+  }
+
+  const openEditMember = (member) => {
+    clearDraft()
+    setEditingMember(member)
+    setMemberModalKey((key) => key + 1)
+    setIsMemberModalOpen(true)
+  }
+
+  const closeMemberModal = () => {
+    clearDraft()
+    setIsMemberModalOpen(false)
+    setEditingMember(null)
   }
 
   // Delete Member
@@ -358,13 +473,20 @@ export default function Household() {
                 </p>
               </div>
 
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 flex-wrap">
+                {households.length > 1 && activeHousehold && (
+                  <select
+                    value={activeHousehold.id}
+                    onChange={(e) => setActiveHousehold(households.find((household) => household.id === Number(e.target.value)) || null)}
+                    className="rounded-xl border border-border-light bg-white px-3 py-2.5 text-sm font-medium text-text-primary focus:border-primary-500 focus:outline-none"
+                    aria-label="Select household"
+                  >
+                    {households.map((household) => <option key={household.id} value={household.id}>{household.name}</option>)}
+                  </select>
+                )}
                 {activeHousehold && (
                   <button
-                    onClick={() => {
-                      setEditingMember(null)
-                      setIsMemberModalOpen(true)
-                    }}
+                    onClick={openAddMember}
                     className="inline-flex items-center gap-2 rounded-xl bg-primary-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md shadow-primary-600/20 hover:bg-primary-700 transition-all hover:scale-[1.02]"
                   >
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -375,6 +497,15 @@ export default function Household() {
                 )}
                 <button
                   onClick={() => {
+                    setEditingHousehold(null)
+                    setIsHouseholdModalOpen(true)
+                  }}
+                  className="rounded-xl bg-primary-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md shadow-primary-600/20 hover:bg-primary-700 transition-all"
+                >
+                  + Add Household
+                </button>
+                <button
+                  onClick={() => {
                     setEditingHousehold(activeHousehold || null)
                     setIsHouseholdModalOpen(true)
                   }}
@@ -382,6 +513,14 @@ export default function Household() {
                 >
                   {activeHousehold ? 'Edit Household' : 'Create Household'}
                 </button>
+                {activeHousehold && (
+                  <button
+                    onClick={() => { setDeleteConfirmation(''); setIsDeleteHouseholdOpen(true) }}
+                    className="rounded-xl border border-rose-200 bg-white px-4 py-2.5 text-sm font-medium text-rose-700 hover:bg-rose-50 transition-colors"
+                  >
+                    Remove Household
+                  </button>
+                )}
               </div>
             </div>
 
@@ -483,10 +622,7 @@ export default function Household() {
                       <p className="text-xs text-text-muted mt-0.5">Biometric profiles and individual nutritional equations</p>
                     </div>
                     <button
-                      onClick={() => {
-                        setEditingMember(null)
-                        setIsMemberModalOpen(true)
-                      }}
+                      onClick={openAddMember}
                       className="inline-flex items-center gap-1.5 rounded-xl border border-border-light bg-white px-3.5 py-2 text-xs font-semibold text-text-secondary hover:bg-cream transition-colors"
                     >
                       + Add Member
@@ -497,10 +633,7 @@ export default function Household() {
                     <div className="rounded-3xl border border-dashed border-border-light bg-white p-8 text-center">
                       <p className="text-sm text-text-secondary">No family members in this household yet.</p>
                       <button
-                        onClick={() => {
-                          setEditingMember(null)
-                          setIsMemberModalOpen(true)
-                        }}
+                        onClick={openAddMember}
                         className="mt-4 rounded-xl bg-primary-600 px-5 py-2 text-xs font-semibold text-white shadow hover:bg-primary-700 transition-all"
                       >
                         Add Your First Family Member
@@ -511,6 +644,12 @@ export default function Household() {
                       {members.map((member) => {
                         const target = nutritionTargets[member.id]
                         const isCalculating = calculatingMemberId === member.id
+                        const allergies = typeof member.allergies === 'string'
+                          ? member.allergies.split(',').map((item) => item.trim()).filter(Boolean)
+                          : []
+                        const diseases = typeof member.diseases === 'string'
+                          ? member.diseases.split(',').map((item) => item.trim()).filter(Boolean)
+                          : []
 
                         return (
                           <div
@@ -537,10 +676,7 @@ export default function Household() {
                                 {/* Edit / Delete Menu */}
                                 <div className="flex items-center gap-1">
                                   <button
-                                    onClick={() => {
-                                      setEditingMember(member)
-                                      setIsMemberModalOpen(true)
-                                    }}
+                                    onClick={() => openEditMember(member)}
                                     className="rounded-lg p-1.5 text-text-muted hover:bg-cream hover:text-text-primary transition-colors"
                                     title="Edit Member"
                                   >
@@ -576,20 +712,19 @@ export default function Household() {
                                 </div>
                               </div>
 
-                              {/* Dietary Preference & Allergies */}
+                              {/* Dietary Preference & compact health status */}
                               <div className="mt-3 flex flex-wrap items-center gap-1.5">
                                 <span className="inline-flex items-center rounded-lg bg-primary-50 px-2 py-0.5 text-[11px] font-bold text-primary-700 capitalize">
                                   🥗 {member.dietary_preference.replace('_', ' ')}
                                 </span>
-                                {member.allergies && typeof member.allergies === 'string' && member.allergies.split(',').map((allergy, idx) => (
-                                  <span key={idx} className="inline-flex items-center rounded-lg bg-rose-50 px-2 py-0.5 text-[11px] font-medium text-rose-700">
-                                    🚫 {allergy.trim()}
-                                  </span>
-                                ))}
+                                <HealthStatusPill type="allergy" items={allergies} />
+                                <HealthStatusPill type="disease" items={diseases} />
                                 {member.dietary_restrictions && typeof member.dietary_restrictions === 'string' && member.dietary_restrictions.split(',').map((res, idx) => (
-                                  <span key={idx} className="inline-flex items-center rounded-lg bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">
-                                    ⚠️ {res.trim()}
-                                  </span>
+                                  res.trim() ? (
+                                    <span key={`restriction-${idx}`} className="inline-flex items-center rounded-lg bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">
+                                      ⚠️ {res.trim()}
+                                    </span>
+                                  ) : null
                                 ))}
                               </div>
 
@@ -698,11 +833,34 @@ export default function Household() {
         initialData={editingHousehold}
       />
 
+      {isDeleteHouseholdOpen && activeHousehold && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl border border-rose-100 bg-white p-6 shadow-2xl">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-rose-100 text-lg">🗑️</div>
+            <h3 className="mt-4 text-xl font-bold text-text-primary">Remove household?</h3>
+            <p className="mt-2 text-sm leading-relaxed text-text-secondary">This permanently removes <strong>{activeHousehold.name}</strong>, including its members, nutrition targets, meal plans, and grocery lists.</p>
+            <label className="mt-5 block text-xs font-bold uppercase tracking-wider text-text-secondary">Type “{activeHousehold.name}” to confirm</label>
+            <input
+              autoFocus
+              value={deleteConfirmation}
+              onChange={(event) => setDeleteConfirmation(event.target.value)}
+              className="mt-2 w-full rounded-xl border border-border-light bg-cream/40 px-3 py-2.5 text-sm focus:border-rose-400 focus:outline-none focus:ring-2 focus:ring-rose-100"
+            />
+            <div className="mt-6 flex justify-end gap-3">
+              <button onClick={() => setIsDeleteHouseholdOpen(false)} disabled={deletingHousehold} className="rounded-xl border border-border-light px-4 py-2 text-sm font-semibold text-text-secondary hover:bg-cream">Cancel</button>
+              <button onClick={handleDeleteHousehold} disabled={deleteConfirmation.trim() !== activeHousehold.name || deletingHousehold} className="rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-40">{deletingHousehold ? 'Removing…' : 'Remove household'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <MemberModal
+        key={memberModalKey}
         isOpen={isMemberModalOpen}
-        onClose={() => setIsMemberModalOpen(false)}
+        onClose={closeMemberModal}
         onSave={handleSaveMember}
         initialData={editingMember}
+        householdId={activeHousehold?.id}
       />
 
       <MetabolicModal

@@ -52,6 +52,7 @@ class MemberBase(BaseModel):
         description="'vegetarian', 'non_vegetarian', 'vegan', or 'eggitarian'",
     )
     allergies: Optional[str] = Field(None, description="Known allergies (e.g. 'peanuts, lactose')")
+    diseases: Optional[str] = Field(None, description="Selected health conditions, stored as comma-separated labels")
     dietary_restrictions: Optional[str] = Field(None, description="Specific restrictions (e.g. 'no onion, no garlic')")
 
     @field_validator("gender", mode="before")
@@ -95,6 +96,7 @@ class MemberUpdate(BaseModel):
     activity_level: Optional[ActivityLevelType] = None
     dietary_preference: Optional[DietaryPreferenceType] = None
     allergies: Optional[str] = None
+    diseases: Optional[str] = None
     dietary_restrictions: Optional[str] = None
 
     @field_validator("gender", mode="before")

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth, SignedIn, SignedOut } from '@clerk/clerk-react'
 import Navbar from '../components/Navbar'
@@ -7,7 +7,7 @@ import MealPlanGrid from '../components/MealPlanGrid'
 import SwapMealModal from '../components/SwapMealModal'
 
 export default function MealPlan() {
-  const { isSignedIn, getToken } = useAuth()
+  const { isSignedIn, isLoaded, getToken } = useAuth()
   const navigate = useNavigate()
 
   const [households, setHouseholds] = useState([])
@@ -17,6 +17,31 @@ export default function MealPlan() {
   const [loadingPlan, setLoadingPlan] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [error, setError] = useState(null)
+  const getTokenRef = useRef(getToken)
+  const requestIdRef = useRef(0)
+
+  // Clerk can refresh the getToken callback while React is rendering. Keeping
+  // it in a ref prevents that refresh from restarting protected API requests.
+  useEffect(() => {
+    getTokenRef.current = getToken
+  }, [getToken])
+
+  const authorizedFetch = async (url, options = {}) => {
+    const request = async (freshToken = false) => {
+      const token = await getTokenRef.current(freshToken ? { skipCache: true } : undefined)
+      if (!token) throw new Error('Your sign-in session is not ready. Please refresh the page or sign in again.')
+      return fetch(url, {
+        ...options,
+        headers: { ...(options.headers || {}), Authorization: `Bearer ${token}` },
+      })
+    }
+
+    let response = await request()
+    // Clerk may retain an expired session JWT briefly after a page reload.
+    // Retry once with a newly minted token before surfacing an auth failure.
+    if (response.status === 401) response = await request(true)
+    return response
+  }
 
   // Swap modal state
   const [swapModalOpen, setSwapModalOpen] = useState(false)
@@ -24,16 +49,13 @@ export default function MealPlan() {
 
   // Fetch households on mount
   useEffect(() => {
-    if (!isSignedIn) return
+    if (!isLoaded || !isSignedIn) return
 
     const fetchHouseholds = async () => {
       setLoadingHouseholds(true)
       setError(null)
       try {
-        const token = await getToken()
-        const res = await fetch('http://localhost:8000/api/households', {
-          headers: { Authorization: `Bearer ${token}` },
-        })
+        const res = await authorizedFetch('http://localhost:8000/api/households')
         if (!res.ok) throw new Error('Failed to load households')
         const data = await res.json()
         setHouseholds(data)
@@ -48,67 +70,63 @@ export default function MealPlan() {
     }
 
     fetchHouseholds()
-  }, [isSignedIn, getToken])
+  }, [isLoaded, isSignedIn])
 
   // Fetch active meal plan when selected household changes
   useEffect(() => {
-    if (!selectedHouseholdId || !isSignedIn) return
+    if (!selectedHouseholdId || !isLoaded || !isSignedIn) return
 
     const fetchLatestPlan = async () => {
+      const requestId = ++requestIdRef.current
       setLoadingPlan(true)
       setError(null)
       try {
-        const token = await getToken()
-        const res = await fetch(
-          `http://localhost:8000/api/households/${selectedHouseholdId}/plans`,
-          {
-            headers: { Authorization: `Bearer ${token}` },
-          }
-        )
-        if (!res.ok) throw new Error('Failed to load meal plans')
+        const res = await authorizedFetch(`http://localhost:8000/api/households/${selectedHouseholdId}/plans`)
+        if (!res.ok) {
+          if (res.status === 401) throw new Error('Your session expired. Please sign out and sign in again.')
+          throw new Error('Failed to load meal plans')
+        }
         const plans = await res.json()
+        if (requestId !== requestIdRef.current) return
         if (plans.length > 0) {
           // Fetch full plan detail for the newest plan
           const latestId = plans[0].id
-          const detailRes = await fetch(
-            `http://localhost:8000/api/households/${selectedHouseholdId}/plans/${latestId}`,
-            {
-              headers: { Authorization: `Bearer ${token}` },
-            }
-          )
+          const detailRes = await authorizedFetch(`http://localhost:8000/api/households/${selectedHouseholdId}/plans/${latestId}`)
           if (detailRes.ok) {
             const detailData = await detailRes.json()
-            setCurrentPlan(detailData)
+            if (requestId === requestIdRef.current) setCurrentPlan(detailData)
           } else {
-            setCurrentPlan(plans[0])
+            if (detailRes.status === 401) throw new Error('Your session expired. Please sign out and sign in again.')
+            if (requestId === requestIdRef.current) setCurrentPlan(plans[0])
           }
         } else {
-          setCurrentPlan(null)
+          if (requestId === requestIdRef.current) setCurrentPlan(null)
         }
       } catch (err) {
-        console.error(err)
-        setError(err.message)
+        if (requestId === requestIdRef.current) {
+          console.error(err)
+          setCurrentPlan(null)
+          setError(err.message)
+        }
       } finally {
-        setLoadingPlan(false)
+        if (requestId === requestIdRef.current) setLoadingPlan(false)
       }
     }
 
     fetchLatestPlan()
-  }, [selectedHouseholdId, isSignedIn, getToken])
+  }, [selectedHouseholdId, isLoaded, isSignedIn])
 
   const handleGeneratePlan = async () => {
     if (!selectedHouseholdId || generating) return
     setGenerating(true)
     setError(null)
     try {
-      const token = await getToken()
-      const res = await fetch(
+      const res = await authorizedFetch(
         `http://localhost:8000/api/households/${selectedHouseholdId}/generate-plan`,
         {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
           },
         }
       )
@@ -195,7 +213,7 @@ export default function MealPlan() {
                 >
                   {households.map((h) => (
                     <option key={h.id} value={h.id}>
-                      🏠 {h.name} ({h.member_count ?? h.members?.length ?? 0} members)
+                      {h.name} ({h.member_count ?? h.members?.length ?? 0} members)
                     </option>
                   ))}
                 </select>
@@ -206,7 +224,7 @@ export default function MealPlan() {
                   to={`/grocery-list?householdId=${selectedHouseholdId}&planId=${currentPlan.id}`}
                   className="inline-flex items-center gap-2 rounded-xl border border-primary-200 bg-primary-50 px-4 py-2 text-sm font-semibold text-primary-700 hover:bg-primary-100 transition-colors shadow-xs"
                 >
-                  <span>🛒 Grocery List</span>
+                  <span>Grocery List</span>
                 </Link>
               )}
 
@@ -222,7 +240,7 @@ export default function MealPlan() {
                   </>
                 ) : (
                   <>
-                    <span>✨</span>
+                    <span></span>
                     <span>{currentPlan ? 'Regenerate Plan' : 'Generate Plan'}</span>
                   </>
                 )}
@@ -380,8 +398,8 @@ export default function MealPlan() {
                   <p className="text-base font-bold text-text-primary mt-1">
                     Week of {currentPlan.week_start_date || 'Current Week'}
                   </p>
-                  <span className="inline-block mt-0.5 text-xs font-medium text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md">
-                    Active Plan
+                  <span className={`inline-block mt-0.5 text-xs font-medium px-2 py-0.5 rounded-md ${currentPlan.status === 'needs_regeneration' ? 'text-amber-800 bg-amber-100' : 'text-emerald-700 bg-emerald-50'}`}>
+                    {currentPlan.status === 'needs_regeneration' ? 'Update needed' : 'Active plan'}
                   </span>
                 </div>
 
@@ -391,10 +409,17 @@ export default function MealPlan() {
                     Meals Scheduled
                   </span>
                   <p className="text-2xl font-extrabold text-text-primary mt-1">
-                    {currentPlan.meals?.length || 0} / 21
+                    {currentPlan.meals?.length || 0} / 28
                   </p>
                 </div>
               </div>
+
+              {currentPlan.status === 'needs_regeneration' && (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div><strong>Household details changed.</strong><p className="mt-0.5 text-xs text-amber-800">This saved plan is retained for reference, but it may no longer match current allergies, conditions, targets, preferences, or budget.</p></div>
+                  <button onClick={handleGeneratePlan} disabled={generating} className="shrink-0 rounded-xl bg-amber-700 px-4 py-2 text-xs font-bold text-white hover:bg-amber-800 disabled:opacity-50">{generating ? 'Updating…' : 'Update plan'}</button>
+                </div>
+              )}
 
               {/* Relaxations Banner if any applied */}
               {currentPlan.relaxations_applied && currentPlan.relaxations_applied.length > 0 && (
@@ -404,6 +429,37 @@ export default function MealPlan() {
                     <strong>Optimization Notice:</strong> To ensure a complete 7-day schedule with your dietary choices, the optimizer applied constraint adjustments: {currentPlan.relaxations_applied.join(', ')}.
                   </span>
                 </div>
+              )}
+
+              {currentPlan.safety_notes && currentPlan.safety_notes.length > 0 && (
+                <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-xs leading-relaxed text-rose-950">
+                  <strong>Health-profile caution:</strong>
+                  <ul className="mt-1 list-disc space-y-1 pl-4">{currentPlan.safety_notes.map((note) => <li key={note}>{note}</li>)}</ul>
+                </div>
+              )}
+
+              {currentPlan.member_nutrition_dashboard?.length > 0 && (
+                <section className="rounded-2xl border border-border-light bg-white p-5 shadow-xs">
+                  <div className="mb-4">
+                    <h3 className="font-bold text-text-primary">Individual nutrition progress</h3>
+                    <p className="text-xs text-text-secondary mt-1">Planned intake is calculated from each member’s personalized Monday options. Gaps are shown rather than filled with unsafe foods.</p>
+                  </div>
+                  <div className="grid gap-3 lg:grid-cols-2">
+                    {currentPlan.member_nutrition_dashboard.map((member) => (
+                      <div key={member.member_id} className="rounded-xl border border-border-light bg-surface/40 p-3">
+                        <div className="font-semibold text-sm text-text-primary mb-2">{member.member_name}</div>
+                        <div className="grid grid-cols-5 gap-1 text-center text-[10px]">
+                          {['calories', 'protein', 'carbs', 'fat', 'fiber'].map((nutrient) => {
+                            const target = member.targets[nutrient] || 0
+                            const planned = member.planned[nutrient] || 0
+                            return <div key={nutrient}><div className="capitalize text-text-muted">{nutrient === 'calories' ? 'kcal' : nutrient}</div><div className="font-bold text-text-primary">{Math.round(planned)}/{Math.round(target)}</div><div className="h-1.5 bg-cream rounded-full mt-1 overflow-hidden"><div className="h-full bg-primary-600" style={{width: `${Math.min(100, target ? planned / target * 100 : 0)}%`}} /></div></div>
+                          })}
+                        </div>
+                        {member.unresolved?.length > 0 && <p className="mt-2 text-[11px] text-rose-700">{member.unresolved.join(' · ')}</p>}
+                      </div>
+                    ))}
+                  </div>
+                </section>
               )}
 
               {/* 7-Day Grid */}

@@ -35,7 +35,7 @@ function Navbar() {
 
         {/* Desktop nav */}
         <div className="hidden items-center gap-1 md:flex">
-          <Link
+          {/* <Link
             to="/recipes"
             className={`rounded-lg px-3.5 py-2 text-sm font-medium transition-colors ${
               location.pathname === '/recipes'
@@ -44,8 +44,8 @@ function Navbar() {
             }`}
           >
             Recipes
-          </Link>
-          <Link
+          </Link> */}
+          {/* <Link
             to="/ingredients"
             className={`rounded-lg px-3.5 py-2 text-sm font-medium transition-colors ${
               location.pathname === '/ingredients'
@@ -54,7 +54,7 @@ function Navbar() {
             }`}
           >
             Ingredients
-          </Link>
+          </Link> */}
           <Link
             to="/household"
             className={`rounded-lg px-3.5 py-2 text-sm font-medium transition-colors ${
@@ -75,18 +75,6 @@ function Navbar() {
           >
             Meal Plan
           </Link>
-          <button
-            onClick={() => scrollToSection('how-it-works')}
-            className="rounded-lg px-3.5 py-2 text-sm font-medium text-text-secondary transition-colors hover:bg-cream hover:text-text-primary"
-          >
-            How It Works
-          </button>
-          <button
-            onClick={() => scrollToSection('features')}
-            className="rounded-lg px-3.5 py-2 text-sm font-medium text-text-secondary transition-colors hover:bg-cream hover:text-text-primary"
-          >
-            Features
-          </button>
           <div className="mx-3 h-5 w-px bg-border-light" />
 
           {/* Signed-out state: show Login / Sign up links */}
@@ -164,6 +152,8 @@ function Navbar() {
             >
               Meal Plan
             </Link>
+            <Link to="/allergies" onClick={() => setMobileMenuOpen(false)} className="rounded-lg px-3 py-2.5 text-left text-sm font-medium text-text-secondary transition-colors hover:bg-cream hover:text-text-primary">Allergies</Link>
+            <Link to="/diseases" onClick={() => setMobileMenuOpen(false)} className="rounded-lg px-3 py-2.5 text-left text-sm font-medium text-text-secondary transition-colors hover:bg-cream hover:text-text-primary">Conditions</Link>
             <button onClick={() => scrollToSection('how-it-works')} className="rounded-lg px-3 py-2.5 text-left text-sm font-medium text-text-secondary transition-colors hover:bg-cream hover:text-text-primary">How It Works</button>
             <button onClick={() => scrollToSection('features')} className="rounded-lg px-3 py-2.5 text-left text-sm font-medium text-text-secondary transition-colors hover:bg-cream hover:text-text-primary">Features</button>
             <div className="my-2 h-px bg-border-light" />
