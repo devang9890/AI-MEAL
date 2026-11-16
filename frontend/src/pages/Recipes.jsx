@@ -126,12 +126,8 @@ export default function Recipes() {
                 Explore Indian Recipes
               </h1>
               <p className="mt-2 text-base text-text-secondary max-w-2xl">
-                Browse 125 realistic household meals with exact ingredient measurements, macro breakdowns, and real-time cost estimations.
+                Browse realistic household meals with exact ingredient measurements, macro breakdowns, and real-time cost estimations.
               </p>
-            </div>
-            <div className="rounded-2xl border border-border-light bg-white p-4 shadow-sm text-center shrink-0">
-              <p className="text-xs font-semibold text-text-muted uppercase">Database Total</p>
-              <p className="text-2xl font-extrabold text-primary-600">{recipes.length} Recipes</p>
             </div>
           </div>
         </div>

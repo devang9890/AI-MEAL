@@ -89,22 +89,6 @@ export default function Ingredients() {
                 Normalized per 100g or 100ml with market price benchmarks in Indian Rupees (₹) and precise macronutrient breakdowns.
               </p>
             </div>
-
-            {/* Quick Metrics */}
-            <div className="flex items-center gap-3 shrink-0">
-              <div className="rounded-2xl border border-border-light bg-white p-4 shadow-sm text-center">
-                <p className="text-[11px] font-semibold text-text-muted uppercase">Catalog</p>
-                <p className="text-xl font-extrabold text-primary-600">{ingredients.length} Items</p>
-              </div>
-              <div className="rounded-2xl border border-emerald-200/70 bg-emerald-50/50 p-4 shadow-sm text-center">
-                <p className="text-[11px] font-semibold text-emerald-700 uppercase">High Protein</p>
-                <p className="text-xl font-extrabold text-emerald-800">{highProteinCount} Items</p>
-              </div>
-              <div className="rounded-2xl border border-amber-200/70 bg-amber-50/50 p-4 shadow-sm text-center">
-                <p className="text-[11px] font-semibold text-amber-700 uppercase">High Fiber</p>
-                <p className="text-xl font-extrabold text-amber-800">{highFiberCount} Items</p>
-              </div>
-            </div>
           </div>
         </div>
       </div>

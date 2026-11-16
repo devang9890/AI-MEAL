@@ -35,7 +35,7 @@ function Navbar() {
 
         {/* Desktop nav */}
         <div className="hidden items-center gap-1 md:flex">
-          {/* <Link
+          <Link
             to="/recipes"
             className={`rounded-lg px-3.5 py-2 text-sm font-medium transition-colors ${
               location.pathname === '/recipes'
@@ -44,8 +44,8 @@ function Navbar() {
             }`}
           >
             Recipes
-          </Link> */}
-          {/* <Link
+          </Link>
+          <Link
             to="/ingredients"
             className={`rounded-lg px-3.5 py-2 text-sm font-medium transition-colors ${
               location.pathname === '/ingredients'
@@ -54,7 +54,7 @@ function Navbar() {
             }`}
           >
             Ingredients
-          </Link> */}
+          </Link>
           <Link
             to="/household"
             className={`rounded-lg px-3.5 py-2 text-sm font-medium transition-colors ${

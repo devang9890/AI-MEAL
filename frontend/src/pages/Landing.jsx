@@ -247,7 +247,7 @@ function Landing() {
               to="/recipes"
               className="inline-flex items-center gap-2 rounded-xl bg-primary-600 px-7 py-3.5 text-sm font-semibold text-white shadow-md shadow-primary-600/20 transition-all hover:bg-primary-700 hover:shadow-lg active:scale-[0.98]"
             >
-              Browse All 125+ Recipes &amp; Nutrition Breakdown
+              Browse All Recipes &amp; Nutrition Breakdown
               <ArrowRight />
             </Link>
           </div>
