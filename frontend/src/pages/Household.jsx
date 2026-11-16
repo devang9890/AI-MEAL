@@ -111,22 +111,34 @@ export default function Household() {
       const membersData = await res.json()
       setMembers(membersData)
 
-      // Fetch nutrition targets for members who have one
+      // Nutrition targets are included in each member object directly (0 extra HTTP requests)
       const targetsMap = {}
+      const missingTargets = []
       for (const m of membersData) {
-        if (m.has_nutrition_target) {
-          try {
-            const nRes = await fetch(`${API_BASE}/members/${m.id}/nutrition`, {
-              headers: { Authorization: `Bearer ${token}` }
-            })
-            if (nRes.ok) {
-              const nData = await nRes.json()
-              targetsMap[m.id] = nData
-            }
-          } catch (e) {
-            console.error(`Failed to fetch target for member ${m.id}:`, e)
-          }
+        if (m.nutrition_target) {
+          targetsMap[m.id] = m.nutrition_target
+        } else if (m.has_nutrition_target) {
+          missingTargets.push(m)
         }
+      }
+
+      // Concurrent fallback only if any targets were not inlined
+      if (missingTargets.length > 0) {
+        await Promise.all(
+          missingTargets.map(async (m) => {
+            try {
+              const nRes = await fetch(`${API_BASE}/members/${m.id}/nutrition`, {
+                headers: { Authorization: `Bearer ${token}` }
+              })
+              if (nRes.ok) {
+                const nData = await nRes.json()
+                targetsMap[m.id] = nData
+              }
+            } catch (e) {
+              console.error(`Failed to fetch target for member ${m.id}:`, e)
+            }
+          })
+        )
       }
       setNutritionTargets(targetsMap)
     } catch (err) {

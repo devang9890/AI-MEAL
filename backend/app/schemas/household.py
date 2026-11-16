@@ -3,6 +3,8 @@ from datetime import datetime
 from typing import Optional, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.schemas.nutrition import NutritionTargetOut
+
 
 # Enums / controlled value types
 GenderType = Literal["male", "female"]
@@ -138,3 +140,4 @@ class MemberOut(MemberBase):
     created_at: datetime
     updated_at: datetime
     has_nutrition_target: Optional[bool] = False
+    nutrition_target: Optional[NutritionTargetOut] = None

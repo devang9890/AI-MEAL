@@ -1,8 +1,10 @@
 """Food and Recipe Read-Only API Endpoints."""
-from typing import Optional, List
+import threading
+import time
+from typing import Optional, List, Dict
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import or_
 
 from app.core.database import get_db
@@ -107,6 +109,22 @@ class RecipeIngredientsResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# In-Memory Cache for Static Food & Recipe Catalog
+# ---------------------------------------------------------------------------
+
+_FOOD_CACHE_LOCK = threading.Lock()
+_CACHED_RECIPES_SUMMARY: Optional[List[RecipeSummaryOut]] = None
+_CACHED_RECIPES_TIME: float = 0.0
+_RECIPES_TTL: float = 600.0  # 10 minutes
+
+_CACHED_INGREDIENTS: Optional[List[IngredientOut]] = None
+_CACHED_INGREDIENTS_TIME: float = 0.0
+_INGREDIENTS_TTL: float = 600.0  # 10 minutes
+
+_CACHED_RECIPE_DETAILS: Dict[int, RecipeDetailOut] = {}
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -138,34 +156,58 @@ def _build_recipe_ingredient_detail(ri: RecipeIngredient) -> RecipeIngredientDet
     )
 
 
-# ---------------------------------------------------------------------------
-# Ingredients Endpoints
-# ---------------------------------------------------------------------------
+def _get_all_recipe_summaries(db: Session) -> List[RecipeSummaryOut]:
+    """Retrieve and cache all recipe summaries with eager-loaded ingredient counts."""
+    global _CACHED_RECIPES_SUMMARY, _CACHED_RECIPES_TIME
+    now = time.time()
+    if _CACHED_RECIPES_SUMMARY is not None and (now - _CACHED_RECIPES_TIME < _RECIPES_TTL):
+        return _CACHED_RECIPES_SUMMARY
 
-@router.get("/ingredients", response_model=IngredientListResponse)
-def list_ingredients(
-    skip: int = Query(0, ge=0, description="Offset for pagination"),
-    limit: int = Query(50, ge=1, le=200, description="Page size"),
-    category: Optional[str] = Query(None, description="Filter by ingredient category"),
-    search: Optional[str] = Query(None, description="Search ingredient name"),
-    db: Session = Depends(get_db),
-):
-    """Retrieve paginated list of ingredients with optional category and search filters."""
-    query = db.query(Ingredient)
+    with _FOOD_CACHE_LOCK:
+        if _CACHED_RECIPES_SUMMARY is not None and (now - _CACHED_RECIPES_TIME < _RECIPES_TTL):
+            return _CACHED_RECIPES_SUMMARY
 
-    if category:
-        query = query.filter(Ingredient.category.ilike(f"%{category.strip()}%"))
-    if search:
-        query = query.filter(Ingredient.name.ilike(f"%{search.strip()}%"))
+        recipes = (
+            db.query(Recipe)
+            .options(joinedload(Recipe.recipe_ingredients))
+            .order_by(Recipe.name.asc())
+            .all()
+        )
+        items = [
+            RecipeSummaryOut(
+                id=r.id,
+                name=r.name,
+                description=r.description,
+                meal_type=r.meal_type,
+                cuisine=r.cuisine,
+                servings=r.servings or 2,
+                preparation_time=r.preparation_time,
+                cooking_time=r.cooking_time,
+                dietary_tags=r.dietary_tags or [],
+                estimated_cost=float(r.estimated_cost) if r.estimated_cost is not None else None,
+                instructions=r.instructions,
+                ingredient_count=len(r.recipe_ingredients),
+            )
+            for r in recipes
+        ]
+        _CACHED_RECIPES_SUMMARY = items
+        _CACHED_RECIPES_TIME = now
+        return items
 
-    total = query.count()
-    items = query.order_by(Ingredient.name.asc()).offset(skip).limit(limit).all()
 
-    return IngredientListResponse(
-        total=total,
-        skip=skip,
-        limit=limit,
-        items=[
+def _get_all_ingredients(db: Session) -> List[IngredientOut]:
+    """Retrieve and cache all ingredients."""
+    global _CACHED_INGREDIENTS, _CACHED_INGREDIENTS_TIME
+    now = time.time()
+    if _CACHED_INGREDIENTS is not None and (now - _CACHED_INGREDIENTS_TIME < _INGREDIENTS_TTL):
+        return _CACHED_INGREDIENTS
+
+    with _FOOD_CACHE_LOCK:
+        if _CACHED_INGREDIENTS is not None and (now - _CACHED_INGREDIENTS_TIME < _INGREDIENTS_TTL):
+            return _CACHED_INGREDIENTS
+
+        items = db.query(Ingredient).order_by(Ingredient.name.asc()).all()
+        result = [
             IngredientOut(
                 id=i.id,
                 name=i.name,
@@ -179,7 +221,43 @@ def list_ingredients(
                 fiber=i.fiber,
             )
             for i in items
-        ],
+        ]
+        _CACHED_INGREDIENTS = result
+        _CACHED_INGREDIENTS_TIME = now
+        return result
+
+
+# ---------------------------------------------------------------------------
+# Ingredients Endpoints
+# ---------------------------------------------------------------------------
+
+@router.get("/ingredients", response_model=IngredientListResponse)
+def list_ingredients(
+    skip: int = Query(0, ge=0, description="Offset for pagination"),
+    limit: int = Query(50, ge=1, le=200, description="Page size"),
+    category: Optional[str] = Query(None, description="Filter by ingredient category"),
+    search: Optional[str] = Query(None, description="Search ingredient name"),
+    db: Session = Depends(get_db),
+):
+    """Retrieve paginated list of ingredients with optional category and search filters."""
+    all_ings = _get_all_ingredients(db)
+
+    filtered = all_ings
+    if category:
+        cat = category.strip().lower()
+        filtered = [i for i in filtered if i.category and cat in i.category.lower()]
+    if search:
+        q = search.strip().lower()
+        filtered = [i for i in filtered if i.name and q in i.name.lower()]
+
+    total = len(filtered)
+    paged = filtered[skip : skip + limit]
+
+    return IngredientListResponse(
+        total=total,
+        skip=skip,
+        limit=limit,
+        items=paged,
     )
 
 
@@ -189,6 +267,11 @@ def get_ingredient(
     db: Session = Depends(get_db),
 ):
     """Retrieve details of a single ingredient by ID."""
+    all_ings = _get_all_ingredients(db)
+    matched = next((i for i in all_ings if i.id == ingredient_id), None)
+    if matched:
+        return matched
+
     ing = db.query(Ingredient).filter(Ingredient.id == ingredient_id).first()
     if not ing:
         raise HTTPException(
@@ -224,53 +307,37 @@ def list_recipes(
     search: Optional[str] = Query(None, description="Search recipe name or description"),
     db: Session = Depends(get_db),
 ):
-    """Retrieve paginated list of recipes with filtering and search."""
-    query = db.query(Recipe)
+    """Retrieve paginated list of recipes with fast in-memory filtering."""
+    all_recipes = _get_all_recipe_summaries(db)
 
+    filtered = all_recipes
     if meal_type:
-        query = query.filter(Recipe.meal_type.ilike(f"%{meal_type.strip()}%"))
+        mt = meal_type.strip().lower()
+        filtered = [r for r in filtered if r.meal_type and mt in r.meal_type.lower()]
     if cuisine:
-        query = query.filter(Recipe.cuisine.ilike(f"%{cuisine.strip()}%"))
+        cs = cuisine.strip().lower()
+        filtered = [r for r in filtered if r.cuisine and cs in r.cuisine.lower()]
     if search:
-        search_str = f"%{search.strip()}%"
-        query = query.filter(or_(Recipe.name.ilike(search_str), Recipe.description.ilike(search_str)))
-
-    all_matches = query.order_by(Recipe.name.asc()).all()
-
-    # In-memory filter for dietary_tag JSON list if specified
+        q = search.strip().lower()
+        filtered = [
+            r for r in filtered
+            if (r.name and q in r.name.lower()) or (r.description and q in r.description.lower())
+        ]
     if dietary_tag:
-        tag_lower = dietary_tag.strip().lower()
-        all_matches = [
-            r for r in all_matches
-            if r.dietary_tags and any(tag_lower == str(t).lower() for t in r.dietary_tags)
+        dt = dietary_tag.strip().lower()
+        filtered = [
+            r for r in filtered
+            if any(dt == str(t).lower() for t in (r.dietary_tags or []))
         ]
 
-    total = len(all_matches)
-    paged = all_matches[skip : skip + limit]
-
-    items = [
-        RecipeSummaryOut(
-            id=r.id,
-            name=r.name,
-            description=r.description,
-            meal_type=r.meal_type,
-            cuisine=r.cuisine,
-            servings=r.servings or 2,
-            preparation_time=r.preparation_time,
-            cooking_time=r.cooking_time,
-            dietary_tags=r.dietary_tags or [],
-            estimated_cost=float(r.estimated_cost) if r.estimated_cost is not None else None,
-            instructions=r.instructions,
-            ingredient_count=len(r.recipe_ingredients),
-        )
-        for r in paged
-    ]
+    total = len(filtered)
+    paged = filtered[skip : skip + limit]
 
     return RecipeListResponse(
         total=total,
         skip=skip,
         limit=limit,
-        items=items,
+        items=paged,
     )
 
 
@@ -280,7 +347,17 @@ def get_recipe(
     db: Session = Depends(get_db),
 ):
     """Retrieve complete recipe details including its ingredients and nutritional totals."""
-    recipe = db.query(Recipe).filter(Recipe.id == recipe_id).first()
+    if recipe_id in _CACHED_RECIPE_DETAILS:
+        return _CACHED_RECIPE_DETAILS[recipe_id]
+
+    recipe = (
+        db.query(Recipe)
+        .options(
+            joinedload(Recipe.recipe_ingredients).joinedload(RecipeIngredient.ingredient)
+        )
+        .filter(Recipe.id == recipe_id)
+        .first()
+    )
     if not recipe:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -297,7 +374,7 @@ def get_recipe(
 
     servings = max(recipe.servings or 1, 1)
 
-    return RecipeDetailOut(
+    detail = RecipeDetailOut(
         id=recipe.id,
         name=recipe.name,
         description=recipe.description,
@@ -326,6 +403,11 @@ def get_recipe(
         ),
     )
 
+    with _FOOD_CACHE_LOCK:
+        _CACHED_RECIPE_DETAILS[recipe_id] = detail
+
+    return detail
+
 
 @router.get("/recipes/{recipe_id}/ingredients", response_model=RecipeIngredientsResponse)
 def get_recipe_ingredients(
@@ -333,17 +415,10 @@ def get_recipe_ingredients(
     db: Session = Depends(get_db),
 ):
     """Retrieve list of ingredients and their portion contributions for a specific recipe."""
-    recipe = db.query(Recipe).filter(Recipe.id == recipe_id).first()
-    if not recipe:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Recipe with ID {recipe_id} not found",
-        )
-
-    ing_details = [_build_recipe_ingredient_detail(ri) for ri in recipe.recipe_ingredients]
+    detail = get_recipe(recipe_id=recipe_id, db=db)
 
     return RecipeIngredientsResponse(
-        recipe_id=recipe.id,
-        recipe_name=recipe.name,
-        ingredients=ing_details,
+        recipe_id=detail.id,
+        recipe_name=detail.name,
+        ingredients=detail.ingredients,
     )

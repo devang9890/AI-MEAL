@@ -1,7 +1,7 @@
 """Household, Member, and Nutrition Target API Routes."""
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.core.database import get_db
 from app.core.auth import get_current_user
@@ -61,6 +61,7 @@ def _get_user_member_or_404(
     household = _get_user_household_or_404(household_id, user, db)
     member = (
         db.query(Member)
+        .options(joinedload(Member.nutrition_targets))
         .filter(Member.id == member_id, Member.household_id == household.id)
         .first()
     )
@@ -76,6 +77,7 @@ def _get_member_by_id_for_user(member_id: int, user: User, db: Session) -> Membe
     """Retrieve member by member_id ensuring its parent household is owned by user."""
     member = (
         db.query(Member)
+        .options(joinedload(Member.nutrition_targets))
         .join(Household, Member.household_id == Household.id)
         .filter(Member.id == member_id, Household.owner_id == user.id)
         .first()
@@ -86,6 +88,45 @@ def _get_member_by_id_for_user(member_id: int, user: User, db: Session) -> Membe
             detail=f"Member with ID {member_id} not found or you do not have permission to access it.",
         )
     return member
+
+
+def _member_to_out(m: Member) -> MemberOut:
+    """Convert Member ORM to MemberOut schema, attaching latest nutrition target if present."""
+    targets = getattr(m, "nutrition_targets", None)
+    nt = targets[-1] if targets else None
+    nt_out = (
+        NutritionTargetOut(
+            id=nt.id,
+            member_id=nt.member_id,
+            daily_calories=nt.daily_calories,
+            daily_protein_g=nt.daily_protein_g,
+            daily_carbs_g=nt.daily_carbs_g,
+            daily_fat_g=nt.daily_fat_g,
+            daily_fiber_g=nt.daily_fiber_g,
+            created_at=nt.created_at,
+            updated_at=nt.updated_at,
+        )
+        if nt
+        else None
+    )
+    return MemberOut(
+        id=m.id,
+        household_id=m.household_id,
+        name=m.name,
+        age=m.age,
+        gender=m.gender,
+        height_cm=m.height_cm,
+        weight_kg=m.weight_kg,
+        activity_level=m.activity_level,
+        dietary_preference=m.dietary_preference,
+        allergies=m.allergies,
+        diseases=m.diseases,
+        dietary_restrictions=m.dietary_restrictions,
+        created_at=m.created_at,
+        updated_at=m.updated_at,
+        has_nutrition_target=nt is not None,
+        nutrition_target=nt_out,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +168,7 @@ def list_households(
     """List all households owned by the authenticated user."""
     households = (
         db.query(Household)
+        .options(joinedload(Household.members))
         .filter(Household.owner_id == current_user.id)
         .order_by(Household.created_at.desc())
         .all()
@@ -258,27 +300,11 @@ def create_member(
     try:
         calculated = calculate_nutrition_for_member(member)
         save_or_update_nutrition_target(db, member, calculated)
-        has_target = True
     except Exception:
-        has_target = False
+        pass
 
-    return MemberOut(
-        id=member.id,
-        household_id=member.household_id,
-        name=member.name,
-        age=member.age,
-        gender=member.gender,
-        height_cm=member.height_cm,
-        weight_kg=member.weight_kg,
-        activity_level=member.activity_level,
-        dietary_preference=member.dietary_preference,
-        allergies=member.allergies,
-        diseases=member.diseases,
-        dietary_restrictions=member.dietary_restrictions,
-        created_at=member.created_at,
-        updated_at=member.updated_at,
-        has_nutrition_target=has_target,
-    )
+    db.refresh(member)
+    return _member_to_out(member)
 
 
 @router.get("/households/{household_id}/members", response_model=List[MemberOut])
@@ -291,31 +317,13 @@ def list_household_members(
     household = _get_user_household_or_404(household_id, current_user, db)
     members = (
         db.query(Member)
+        .options(joinedload(Member.nutrition_targets))
         .filter(Member.household_id == household.id)
         .order_by(Member.created_at.asc())
         .all()
     )
 
-    return [
-        MemberOut(
-            id=m.id,
-            household_id=m.household_id,
-            name=m.name,
-            age=m.age,
-            gender=m.gender,
-            height_cm=m.height_cm,
-            weight_kg=m.weight_kg,
-            activity_level=m.activity_level,
-            dietary_preference=m.dietary_preference,
-            allergies=m.allergies,
-            diseases=m.diseases,
-            dietary_restrictions=m.dietary_restrictions,
-            created_at=m.created_at,
-            updated_at=m.updated_at,
-            has_nutrition_target=len(m.nutrition_targets) > 0,
-        )
-        for m in members
-    ]
+    return [_member_to_out(m) for m in members]
 
 
 @router.get(
@@ -329,23 +337,7 @@ def get_member(
 ):
     """Get single member details."""
     m = _get_user_member_or_404(household_id, member_id, current_user, db)
-    return MemberOut(
-        id=m.id,
-        household_id=m.household_id,
-        name=m.name,
-        age=m.age,
-        gender=m.gender,
-        height_cm=m.height_cm,
-        weight_kg=m.weight_kg,
-        activity_level=m.activity_level,
-        dietary_preference=m.dietary_preference,
-        allergies=m.allergies,
-        diseases=m.diseases,
-        dietary_restrictions=m.dietary_restrictions,
-        created_at=m.created_at,
-        updated_at=m.updated_at,
-        has_nutrition_target=len(m.nutrition_targets) > 0,
-    )
+    return _member_to_out(m)
 
 
 @router.put(
@@ -419,23 +411,8 @@ def update_member(
         except Exception:
             pass
 
-    return MemberOut(
-        id=member.id,
-        household_id=member.household_id,
-        name=member.name,
-        age=member.age,
-        gender=member.gender,
-        height_cm=member.height_cm,
-        weight_kg=member.weight_kg,
-        activity_level=member.activity_level,
-        dietary_preference=member.dietary_preference,
-        allergies=member.allergies,
-        diseases=member.diseases,
-        dietary_restrictions=member.dietary_restrictions,
-        created_at=member.created_at,
-        updated_at=member.updated_at,
-        has_nutrition_target=len(member.nutrition_targets) > 0,
-    )
+    db.refresh(member)
+    return _member_to_out(member)
 
 
 @router.delete(
