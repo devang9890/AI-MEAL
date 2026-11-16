@@ -14,6 +14,8 @@ demonstration purposes and do not constitute medical or dietary advice.
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session, joinedload
@@ -58,51 +60,76 @@ RELAXATION_TIERS: List[Tuple[float, float, Optional[str]]] = [
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _build_recipe_data(db: Session) -> Dict[int, Dict[str, Any]]:
-    """Pre-compute per-recipe aggregated nutrition and cost."""
-    recipes = (
-        db.query(Recipe)
-        .options(
-            joinedload(Recipe.recipe_ingredients).joinedload(RecipeIngredient.ingredient)
+_RECIPE_CACHE_LOCK = threading.Lock()
+_CACHED_RECIPE_DATA: Optional[Dict[int, Dict[str, Any]]] = None
+_CACHED_RECIPE_DATA_TIME: float = 0.0
+_RECIPE_CACHE_TTL: float = 600.0  # 10 minutes cache
+
+
+def clear_recipe_cache():
+    """Clear in-memory recipe cache."""
+    global _CACHED_RECIPE_DATA, _CACHED_RECIPE_DATA_TIME
+    with _RECIPE_CACHE_LOCK:
+        _CACHED_RECIPE_DATA = None
+        _CACHED_RECIPE_DATA_TIME = 0.0
+
+
+def _build_recipe_data(db: Session, force_refresh: bool = False) -> Dict[int, Dict[str, Any]]:
+    """Pre-compute per-recipe aggregated nutrition and cost with in-memory caching."""
+    global _CACHED_RECIPE_DATA, _CACHED_RECIPE_DATA_TIME
+    now = time.time()
+    if not force_refresh and _CACHED_RECIPE_DATA is not None and (now - _CACHED_RECIPE_DATA_TIME < _RECIPE_CACHE_TTL):
+        return _CACHED_RECIPE_DATA
+
+    with _RECIPE_CACHE_LOCK:
+        if not force_refresh and _CACHED_RECIPE_DATA is not None and (now - _CACHED_RECIPE_DATA_TIME < _RECIPE_CACHE_TTL):
+            return _CACHED_RECIPE_DATA
+
+        recipes = (
+            db.query(Recipe)
+            .options(
+                joinedload(Recipe.recipe_ingredients).joinedload(RecipeIngredient.ingredient)
+            )
+            .all()
         )
-        .all()
-    )
-    recipe_data: Dict[int, Dict[str, Any]] = {}
+        recipe_data: Dict[int, Dict[str, Any]] = {}
 
-    for recipe in recipes:
-        total_calories = 0.0
-        total_protein = 0.0
-        total_carbs = 0.0
-        total_fat = 0.0
-        total_fiber = 0.0
-        total_cost = float(recipe.estimated_cost or 0.0)
+        for recipe in recipes:
+            total_calories = 0.0
+            total_protein = 0.0
+            total_carbs = 0.0
+            total_fat = 0.0
+            total_fiber = 0.0
+            total_cost = float(recipe.estimated_cost or 0.0)
 
-        for ri in recipe.recipe_ingredients:
-            ing: Ingredient = ri.ingredient
-            factor = ri.quantity / 100.0
-            total_calories += (ing.calories or 0.0) * factor
-            total_protein += (ing.protein or 0.0) * factor
-            total_carbs += (ing.carbohydrates or 0.0) * factor
-            total_fat += (ing.fat or 0.0) * factor
-            total_fiber += (ing.fiber or 0.0) * factor
+            for ri in recipe.recipe_ingredients:
+                ing: Ingredient = ri.ingredient
+                factor = ri.quantity / 100.0
+                total_calories += (ing.calories or 0.0) * factor
+                total_protein += (ing.protein or 0.0) * factor
+                total_carbs += (ing.carbohydrates or 0.0) * factor
+                total_fat += (ing.fat or 0.0) * factor
+                total_fiber += (ing.fiber or 0.0) * factor
 
-        recipe_data[recipe.id] = {
-            "id": recipe.id,
-            "name": recipe.name,
-            "meal_type": (recipe.meal_type or "").lower(),
-            "dietary_tags": [t.lower() for t in (recipe.dietary_tags or [])],
-            "estimated_cost": total_cost,
-            "calories": round(total_calories, 1),
-            "protein": round(total_protein, 1),
-            "carbs": round(total_carbs, 1),
-            "fat": round(total_fat, 1),
-            "fiber": round(total_fiber, 1),
-            "servings": recipe.servings or 2,
-            "ingredient_names": [ri.ingredient.name.lower() for ri in recipe.recipe_ingredients],
-            "added_salt_g": sum(ri.quantity for ri in recipe.recipe_ingredients if "salt" in ri.ingredient.name.lower()),
-        }
+            recipe_data[recipe.id] = {
+                "id": recipe.id,
+                "name": recipe.name,
+                "meal_type": (recipe.meal_type or "").lower(),
+                "dietary_tags": [t.lower() for t in (recipe.dietary_tags or [])],
+                "estimated_cost": total_cost,
+                "calories": round(total_calories, 1),
+                "protein": round(total_protein, 1),
+                "carbs": round(total_carbs, 1),
+                "fat": round(total_fat, 1),
+                "fiber": round(total_fiber, 1),
+                "servings": recipe.servings or 2,
+                "ingredient_names": [ri.ingredient.name.lower() for ri in recipe.recipe_ingredients],
+                "added_salt_g": sum(ri.quantity for ri in recipe.recipe_ingredients if "salt" in ri.ingredient.name.lower()),
+            }
 
-    return recipe_data
+        _CACHED_RECIPE_DATA = recipe_data
+        _CACHED_RECIPE_DATA_TIME = now
+        return recipe_data
 
 
 def _household_daily_targets(members: List[Member], db: Session) -> Dict[str, float]:
@@ -110,7 +137,9 @@ def _household_daily_targets(members: List[Member], db: Session) -> Dict[str, fl
     totals = {"calories": 0.0, "protein": 0.0, "carbs": 0.0, "fat": 0.0, "fiber": 0.0}
     for member in members:
         target: Optional[NutritionTarget] = (
-            db.query(NutritionTarget)
+            member.nutrition_targets[0]
+            if getattr(member, "nutrition_targets", None)
+            else db.query(NutritionTarget)
             .filter(NutritionTarget.member_id == member.id)
             .order_by(NutritionTarget.updated_at.desc())
             .first()
@@ -121,6 +150,8 @@ def _household_daily_targets(members: List[Member], db: Session) -> Dict[str, fl
             totals["carbs"] += target.daily_carbs_g
             totals["fat"] += target.daily_fat_g
             totals["fiber"] += target.daily_fiber_g
+
+    return {k: round(v * MAIN_MEAL_SHARE, 1) for k, v in totals.items()}
     return {k: round(v * MAIN_MEAL_SHARE, 1) for k, v in totals.items()}
 
 
@@ -192,7 +223,11 @@ def is_recipe_eligible_for_household(recipe_id: int, household: Household, meal_
 
 
 def personalized_options_for_recipe(
-    base_recipe: Dict[str, Any], members: List[Member], recipe_data: Dict[int, Dict[str, Any]], db: Session
+    base_recipe: Dict[str, Any],
+    members: List[Member],
+    recipe_data: Dict[int, Dict[str, Any]],
+    db: Session,
+    targets_by_member: Optional[Dict[int, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Choose a safe per-member option while retaining a coordinated base meal.
 
@@ -218,7 +253,14 @@ def personalized_options_for_recipe(
                     "blockers": assessment["blockers"], "unresolved": True,
                 })
                 continue
-            target = db.query(NutritionTarget).filter(NutritionTarget.member_id == member.id).first()
+            if targets_by_member and member.id in targets_by_member:
+                target = targets_by_member[member.id]
+            else:
+                target = (
+                    member.nutrition_targets[0]
+                    if getattr(member, "nutrition_targets", None)
+                    else db.query(NutritionTarget).filter(NutritionTarget.member_id == member.id).first()
+                )
             # Prefer protein/fibre-dense alternatives without pretending to meet a full-day target.
             protein_goal = float(target.daily_protein_g) / 4 if target else 15.0
             chosen = min(candidates, key=lambda r: (
@@ -244,19 +286,41 @@ def personalized_options_for_recipe(
     return options
 
 
-def personalized_options_for_recipe_id(recipe_id: int, members: List[Member], db: Session) -> List[Dict[str, Any]]:
+def personalized_options_for_recipe_id(
+    recipe_id: int,
+    members: List[Member],
+    db: Session,
+    recipe_data: Optional[Dict[int, Dict[str, Any]]] = None,
+    targets_by_member: Optional[Dict[int, Any]] = None,
+) -> List[Dict[str, Any]]:
     """Public rehydration helper for persisted plan cards."""
-    recipes = _build_recipe_data(db)
+    recipes = recipe_data if recipe_data is not None else _build_recipe_data(db)
     recipe = recipes.get(recipe_id)
-    return personalized_options_for_recipe(recipe, members, recipes, db) if recipe else []
+    return (
+        personalized_options_for_recipe(recipe, members, recipes, db, targets_by_member=targets_by_member)
+        if recipe
+        else []
+    )
 
 
-def nutrition_dashboard(meals: List[Dict[str, Any]], members: List[Member], db: Session) -> List[Dict[str, Any]]:
+def nutrition_dashboard(
+    meals: List[Dict[str, Any]],
+    members: List[Member],
+    db: Session,
+    targets_by_member: Optional[Dict[int, Any]] = None,
+) -> List[Dict[str, Any]]:
     """Aggregate the selected individual options across one representative day."""
     dashboard: List[Dict[str, Any]] = []
     nutrients = ("calories", "protein", "carbs", "fat", "fiber")
     for member in members:
-        target = db.query(NutritionTarget).filter(NutritionTarget.member_id == member.id).first()
+        if targets_by_member and member.id in targets_by_member:
+            target = targets_by_member[member.id]
+        else:
+            target = (
+                member.nutrition_targets[0]
+                if getattr(member, "nutrition_targets", None)
+                else db.query(NutritionTarget).filter(NutritionTarget.member_id == member.id).first()
+            )
         planned = {key: 0.0 for key in nutrients}
         unresolved: List[str] = []
         # Monday is representative; every day has the same four meal categories.

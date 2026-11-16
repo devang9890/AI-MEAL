@@ -10,16 +10,25 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.core.database import get_db
 from app.core.auth import get_current_user
 from app.models.user import User
 from app.models.household import Household
+from app.models.member import Member
 from app.models.meal_plan import MealPlan
 from app.models.meal import Meal
 from app.models.recipe import Recipe
-from app.services.optimizer import generate_meal_plan, is_recipe_eligible_for_household, personalized_options_for_recipe_id, DAYS, MEAL_TYPES
+from app.services.optimizer import (
+    generate_meal_plan,
+    is_recipe_eligible_for_household,
+    personalized_options_for_recipe_id,
+    _build_recipe_data,
+    nutrition_dashboard,
+    DAYS,
+    MEAL_TYPES,
+)
 from app.services.grocery_service import build_grocery_list
 from app.services.explainability_service import explain_plan
 
@@ -95,39 +104,76 @@ class GroceryListOut(BaseModel):
 # ---------------------------------------------------------------------------
 
 def _get_owned_household(household_id: int, user: User, db: Session) -> Household:
-    h = db.query(Household).filter(Household.id == household_id, Household.owner_id == user.id).first()
+    h = (
+        db.query(Household)
+        .options(
+            joinedload(Household.members).joinedload(Member.nutrition_targets)
+        )
+        .filter(Household.id == household_id, Household.owner_id == user.id)
+        .first()
+    )
     if not h:
         raise HTTPException(status_code=404, detail=f"Household {household_id} not found.")
     return h
 
 
 def _get_plan(plan_id: int, household_id: int, db: Session) -> MealPlan:
-    plan = db.query(MealPlan).filter(MealPlan.id == plan_id, MealPlan.household_id == household_id).first()
+    plan = (
+        db.query(MealPlan)
+        .options(
+            joinedload(MealPlan.meals).joinedload(Meal.recipe)
+        )
+        .filter(MealPlan.id == plan_id, MealPlan.household_id == household_id)
+        .first()
+    )
     if not plan:
         raise HTTPException(status_code=404, detail=f"Meal plan {plan_id} not found.")
     return plan
 
 
-def _meal_to_out(m: Meal, metadata: Optional[Dict] = None, household: Optional[Household] = None, db: Optional[Session] = None) -> MealOut:
+def _meal_to_out(
+    m: Meal,
+    metadata: Optional[Dict] = None,
+    household: Optional[Household] = None,
+    db: Optional[Session] = None,
+    recipe_data: Optional[Dict[int, Dict[str, Any]]] = None,
+    targets_by_member: Optional[Dict[int, Any]] = None,
+) -> MealOut:
     """Convert a Meal ORM object to MealOut schema."""
     meta = metadata or {}
     options = meta.get("personalized_options")
     if options is None and household is not None and db is not None:
-        options = personalized_options_for_recipe_id(m.recipe_id, household.members, db)
+        options = personalized_options_for_recipe_id(
+            m.recipe_id,
+            household.members,
+            db,
+            recipe_data=recipe_data,
+            targets_by_member=targets_by_member,
+        )
+
+    recipe_info = (recipe_data or {}).get(m.recipe_id) if recipe_data else None
+
+    cal = meta.get("calories") if meta.get("calories") is not None else (recipe_info.get("calories") if recipe_info else None)
+    prot = meta.get("protein") if meta.get("protein") is not None else (recipe_info.get("protein") if recipe_info else None)
+    carbs = meta.get("carbs") if meta.get("carbs") is not None else (recipe_info.get("carbs") if recipe_info else None)
+    fat = meta.get("fat") if meta.get("fat") is not None else (recipe_info.get("fat") if recipe_info else None)
+    fib = meta.get("fiber") if meta.get("fiber") is not None else (recipe_info.get("fiber") if recipe_info else None)
+    dtags = meta.get("dietary_tags") or (recipe_info.get("dietary_tags") if recipe_info else None)
+
     return MealOut(
         id=m.id,
         recipe_id=m.recipe_id,
-        recipe_name=m.recipe.name if m.recipe else "",
+        recipe_name=m.recipe.name if m.recipe else (recipe_info.get("name") if recipe_info else ""),
         day=m.day,
         meal_type=m.meal_type,
         servings=m.servings,
-        cost=float(m.cost) if m.cost is not None else None,
-        calories=meta.get("calories"),
-        protein=meta.get("protein"),
-        carbs=meta.get("carbs"),
-        fat=meta.get("fat"),
-        fiber=meta.get("fiber"),
-        dietary_tags=meta.get("dietary_tags"),
+        cost=float(m.cost) if m.cost is not None else (recipe_info.get("estimated_cost") if recipe_info else None),
+        calories=cal,
+        protein=prot,
+        carbs=carbs,
+        fat=fat,
+        fiber=fib,
+        dietary_tags=dtags,
         explanation=meta.get("explanation"),
         personalized_options=options,
     )
@@ -236,24 +282,67 @@ def list_plans(
     db: Session = Depends(get_db),
 ):
     """List all meal plans for a household (newest first)."""
-    _get_owned_household(household_id, current_user, db)
+    household = _get_owned_household(household_id, current_user, db)
     plans = (
         db.query(MealPlan)
+        .options(
+            joinedload(MealPlan.meals).joinedload(Meal.recipe)
+        )
         .filter(MealPlan.household_id == household_id)
         .order_by(MealPlan.created_at.desc())
         .all()
     )
-    return [
-        MealPlanOut(
-            id=p.id,
-            household_id=p.household_id,
-            week_start_date=p.week_start_date,
-            total_cost=float(p.total_cost) if p.total_cost else None,
-            status=p.status,
-            meals=[_meal_to_out(m, household=_get_owned_household(household_id, current_user, db), db=db) for m in p.meals],
+
+    if not plans:
+        return []
+
+    recipe_data = _build_recipe_data(db)
+    targets_by_member = {
+        m.id: (m.nutrition_targets[0] if getattr(m, "nutrition_targets", None) else None)
+        for m in household.members
+    }
+    weekly_budget = float(household.weekly_budget) if household.weekly_budget else None
+
+    result = []
+    for p in plans:
+        meals_out = [
+            _meal_to_out(
+                m,
+                household=household,
+                db=db,
+                recipe_data=recipe_data,
+                targets_by_member=targets_by_member,
+            )
+            for m in p.meals
+        ]
+        total_cost = float(p.total_cost) if p.total_cost else None
+        budget_pct = round((total_cost / weekly_budget * 100), 1) if (total_cost and weekly_budget) else None
+
+        meals_dict = [
+            {
+                "day": mo.day,
+                "meal_type": mo.meal_type,
+                "personalized_options": mo.personalized_options,
+            }
+            for mo in meals_out
+        ]
+        dash = nutrition_dashboard(meals_dict, household.members, db, targets_by_member=targets_by_member) if household.members else []
+
+        result.append(
+            MealPlanOut(
+                id=p.id,
+                household_id=p.household_id,
+                week_start_date=p.week_start_date,
+                total_cost=total_cost,
+                weekly_budget=weekly_budget,
+                budget_utilisation_pct=budget_pct,
+                status=p.status,
+                member_count=len(household.members),
+                member_nutrition_dashboard=dash,
+                meals=meals_out,
+            )
         )
-        for p in plans
-    ]
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -268,15 +357,50 @@ def get_plan(
     db: Session = Depends(get_db),
 ):
     """Get full detail for a specific meal plan."""
-    _get_owned_household(household_id, current_user, db)
+    household = _get_owned_household(household_id, current_user, db)
     plan = _get_plan(plan_id, household_id, db)
+
+    recipe_data = _build_recipe_data(db)
+    targets_by_member = {
+        m.id: (m.nutrition_targets[0] if getattr(m, "nutrition_targets", None) else None)
+        for m in household.members
+    }
+    weekly_budget = float(household.weekly_budget) if household.weekly_budget else None
+    total_cost = float(plan.total_cost) if plan.total_cost else None
+    budget_pct = round((total_cost / weekly_budget * 100), 1) if (total_cost and weekly_budget) else None
+
+    meals_out = [
+        _meal_to_out(
+            m,
+            household=household,
+            db=db,
+            recipe_data=recipe_data,
+            targets_by_member=targets_by_member,
+        )
+        for m in plan.meals
+    ]
+
+    meals_dict = [
+        {
+            "day": mo.day,
+            "meal_type": mo.meal_type,
+            "personalized_options": mo.personalized_options,
+        }
+        for mo in meals_out
+    ]
+    dash = nutrition_dashboard(meals_dict, household.members, db, targets_by_member=targets_by_member) if household.members else []
+
     return MealPlanOut(
         id=plan.id,
         household_id=plan.household_id,
         week_start_date=plan.week_start_date,
-        total_cost=float(plan.total_cost) if plan.total_cost else None,
+        total_cost=total_cost,
+        weekly_budget=weekly_budget,
+        budget_utilisation_pct=budget_pct,
         status=plan.status,
-        meals=[_meal_to_out(m, household=_get_owned_household(household_id, current_user, db), db=db) for m in plan.meals],
+        member_count=len(household.members),
+        member_nutrition_dashboard=dash,
+        meals=meals_out,
     )
 
 
@@ -377,5 +501,6 @@ def swap_meal(
     db.commit()
     db.refresh(meal_obj)
 
-    return _meal_to_out(meal_obj)
+    recipe_data = _build_recipe_data(db)
+    return _meal_to_out(meal_obj, household=household, db=db, recipe_data=recipe_data)
 

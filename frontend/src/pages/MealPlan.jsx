@@ -89,15 +89,20 @@ export default function MealPlan() {
         const plans = await res.json()
         if (requestId !== requestIdRef.current) return
         if (plans.length > 0) {
-          // Fetch full plan detail for the newest plan
-          const latestId = plans[0].id
-          const detailRes = await authorizedFetch(`http://localhost:8000/api/households/${selectedHouseholdId}/plans/${latestId}`)
-          if (detailRes.ok) {
-            const detailData = await detailRes.json()
-            if (requestId === requestIdRef.current) setCurrentPlan(detailData)
-          } else {
-            if (detailRes.status === 401) throw new Error('Your session expired. Please sign out and sign in again.')
+          // If plans[0] already contains the full plan with meals, use it immediately
+          if (plans[0].meals && plans[0].meals.length > 0) {
             if (requestId === requestIdRef.current) setCurrentPlan(plans[0])
+          } else {
+            // Otherwise fetch full plan detail for the newest plan
+            const latestId = plans[0].id
+            const detailRes = await authorizedFetch(`http://localhost:8000/api/households/${selectedHouseholdId}/plans/${latestId}`)
+            if (detailRes.ok) {
+              const detailData = await detailRes.json()
+              if (requestId === requestIdRef.current) setCurrentPlan(detailData)
+            } else {
+              if (detailRes.status === 401) throw new Error('Your session expired. Please sign out and sign in again.')
+              if (requestId === requestIdRef.current) setCurrentPlan(plans[0])
+            }
           }
         } else {
           if (requestId === requestIdRef.current) setCurrentPlan(null)
